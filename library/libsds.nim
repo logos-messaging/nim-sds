@@ -16,7 +16,7 @@ import
   sds,
   ./events/[
     json_message_ready_event, json_message_sent_event, json_missing_dependencies_event,
-    json_periodic_sync_event,
+    json_periodic_sync_event, json_repair_ready_event,
   ]
 
 ################################################################################
@@ -114,6 +114,11 @@ proc onPeriodicSync(ctx: ptr SdsContext): PeriodicSyncCallback =
     callEventCallback(ctx, "onPeriodicSync"):
       $JsonPeriodicSyncEvent.new()
 
+proc onRepairReady(ctx: ptr SdsContext): RepairReadyCallback =
+  return proc(message: seq[byte], channelId: SdsChannelID) {.gcsafe.} =
+    callEventCallback(ctx, "onRepairReady"):
+      $JsonRepairReadyEvent.new(message, channelId)
+
 proc onRetrievalHint(ctx: ptr SdsContext): RetrievalHintProvider =
   return proc(messageId: SdsMessageID): seq[byte] {.gcsafe.} =
     if isNil(ctx.retrievalHintProvider):
@@ -196,6 +201,7 @@ proc SdsNewReliabilityManager(
     missingDependenciesCb: onMissingDependencies(ctx),
     periodicSyncCb: onPeriodicSync(ctx),
     retrievalHintProvider: onRetrievalHint(ctx),
+    repairReadyCb: onRepairReady(ctx),
   )
 
   let retCode = handleRequest(
