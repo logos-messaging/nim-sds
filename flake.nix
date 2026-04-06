@@ -22,6 +22,27 @@
 
       forAllSystems = f: nixpkgs.lib.genAttrs stableSystems (system: f system);
 
+      # Pin Nim to 2.2.8 to match the project's minimum requirement (nim >= 2.2.6).
+      # nixpkgs ships Nim 2.2.4 whose nimble segfaults in sandboxed builds.
+      # The extra-mangling patch is rebased for the 2.2.8 source tree.
+      nimOverlay = final: prev: {
+        nim-unwrapped-2_2 = prev.nim-unwrapped-2_2.overrideAttrs (old: rec {
+          version = "2.2.8";
+          src = prev.fetchurl {
+            url = "https://nim-lang.org/download/nim-${version}.tar.xz";
+            hash = "sha256-EUGRr6CDxQWdy+XOiNvk9CVCz/BOLDAXZo7kOLwLjPw=";
+          };
+          patches = builtins.filter (p:
+            !prev.lib.hasSuffix "extra-mangling-2.patch" (toString p)
+          ) old.patches ++ [
+            ./nix/patches/nim-2.2.8-extra-mangling.patch
+          ];
+          # Nim 2.2.8 has a cstring-to-string type error in excpt.nim when
+          # -d:nativeStacktrace is enabled. Drop it until upstream fixes it.
+          kochArgs = prev.lib.remove "-d:nativeStacktrace" old.kochArgs;
+        });
+      };
+
       pkgsFor = forAllSystems (
         system: import nixpkgs {
           inherit system;
@@ -30,6 +51,7 @@
             allowUnfree = true;
           };
           overlays =  [
+            nimOverlay
             (final: prev: {
               androidEnvCustom = prev.callPackage ./nix/pkgs/android-sdk { };
               androidPkgs = final.androidEnvCustom.pkgs;
