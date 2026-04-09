@@ -1,0 +1,169 @@
+name: ci / nimble
+permissions:
+  contents: read
+  pull-requests: read
+  checks: write
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 'test / ${{ matrix.os }}'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+
+      - name: Install dependencies
+        run: nimble setup -l
+
+      - name: Run test suite
+        run: nimble test
+
+  build-linux:
+    name: 'linux / ${{ matrix.task }}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task:
+          - libsdsDynamicLinux
+          - libsdsStaticLinux
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+
+      - name: Install dependencies
+        run: nimble setup -l
+
+      - name: Build ${{ matrix.task }}
+        run: nimble ${{ matrix.task }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.task }}
+          path: build/
+
+  build-mac:
+    name: 'macos / ${{ matrix.task }}'
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task:
+          - libsdsDynamicMac
+          - libsdsStaticMac
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+
+      - name: Install dependencies
+        run: nimble setup -l
+
+      - name: Build ${{ matrix.task }}
+        run: nimble ${{ matrix.task }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.task }}
+          path: build/
+
+  build-windows:
+    name: 'windows / ${{ matrix.task }}'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task:
+          - libsdsDynamicWindows
+          - libsdsStaticWindows
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+
+      - name: Install dependencies
+        run: nimble setup -l
+
+      - name: Build ${{ matrix.task }}
+        run: nimble ${{ matrix.task }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.task }}
+          path: build/
+
+  build-ios:
+    name: 'macos / libsdsIOS'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+
+      - name: Install dependencies
+        run: nimble setup -l
+
+      - name: Build libsdsIOS
+        run: |
+          export IOS_SDK_PATH=$(xcrun --show-sdk-path --sdk iphoneos)
+          nimble libsdsIOS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libsdsIOS
+          path: build/
+
+  build-android:
+    name: 'linux / libsdsAndroid'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+
+      - name: Install dependencies
+        run: nimble setup -l
+
+      - name: Build libsdsAndroid
+        run: nimble libsdsAndroid
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libsdsAndroid
+          path: build/
