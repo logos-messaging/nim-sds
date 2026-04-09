@@ -9,7 +9,7 @@ srcDir = "sds"
 
 # Dependencies
 requires "nim >= 2.2.6"
-requires "chronos >= 4.0.4"
+requires "chronos >= 4.2.0"
 requires "libp2p >= 1.15.1"
 requires "chronicles"
 requires "stew"
@@ -42,11 +42,19 @@ proc buildLibrary(
         " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds " &
         extra_params & " " & srcDir & name & ".nim"
 
-proc getArch(): string =
-  let arch = getEnv("ARCH")
-  if arch != "": return $arch
-  let (archFromUname, _) = gorgeEx("uname -m")
-  return $archFromUname
+proc getMyCpu(): string =
+  ## Returns a Nim-compatible CPU name (e.g. amd64, arm64) for the host.
+  ## Respects the ARCH environment variable when set.
+  let envArch = getEnv("ARCH")
+  if envArch != "": return envArch
+  when defined(arm64):
+    return "arm64"
+  elif defined(amd64):
+    return "amd64"
+  else:
+    let (archFromUname, _) = gorgeEx("uname -m")
+    let a = archFromUname.strip()
+    return if a == "x86_64": "amd64" elif a == "aarch64": "arm64" else: a
 
 # Tasks
 task test, "Run the test suite":
@@ -73,10 +81,10 @@ task libsdsDynamicMac, "Generate bindings":
   let outLibNameAndExt = "libsds.dylib"
   let name = "libsds"
 
-  let arch = getArch()
+  let cpu = getMyCpu()
+  let clangArch = if cpu == "amd64": "x86_64" else: cpu
   let sdkPath = staticExec("xcrun --show-sdk-path").strip()
-  let archFlags = (if arch == "arm64": "--cpu:arm64 --passC:\"-arch arm64\" --passL:\"-arch arm64\" --passC:\"-isysroot " & sdkPath & "\" --passL:\"-isysroot " & sdkPath & "\""
-                   else: "--cpu:amd64 --passC:\"-arch x86_64\" --passL:\"-arch x86_64\" --passC:\"-isysroot " & sdkPath & "\" --passL:\"-isysroot " & sdkPath & "\"")
+  let archFlags = "--cpu:" & cpu & " --passC:\"-arch " & clangArch & "\" --passL:\"-arch " & clangArch & "\" --passC:\"-isysroot " & sdkPath & "\" --passL:\"-isysroot " & sdkPath & "\""
   buildLibrary outLibNameAndExt,
     name, "library/",
     archFlags & " -d:chronicles_line_numbers --warning:Deprecated:off --warning:UnusedImport:on -d:chronicles_log_level=TRACE",
@@ -102,10 +110,10 @@ task libsdsStaticMac, "Generate bindings":
   let outLibNameAndExt = "libsds.a"
   let name = "libsds"
 
-  let arch = getArch()
+  let cpu = getMyCpu()
+  let clangArch = if cpu == "amd64": "x86_64" else: cpu
   let sdkPath = staticExec("xcrun --show-sdk-path").strip()
-  let archFlags = (if arch == "arm64": "--cpu:arm64 --passC:\"-arch arm64\" --passL:\"-arch arm64\" --passC:\"-isysroot " & sdkPath & "\" --passL:\"-isysroot " & sdkPath & "\""
-                   else: "--cpu:amd64 --passC:\"-arch x86_64\" --passL:\"-arch x86_64\" --passC:\"-isysroot " & sdkPath & "\" --passL:\"-isysroot " & sdkPath & "\"")
+  let archFlags = "--cpu:" & cpu & " --passC:\"-arch " & clangArch & "\" --passL:\"-arch " & clangArch & "\" --passC:\"-isysroot " & sdkPath & "\" --passL:\"-isysroot " & sdkPath & "\""
   buildLibrary outLibNameAndExt,
     name, "library/",
     archFlags & " -d:chronicles_line_numbers --warning:Deprecated:off --warning:UnusedImport:on -d:chronicles_log_level=TRACE",
@@ -117,6 +125,8 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
 
   let outDir = "build"
   let nimcacheDir = outDir & "/nimcache"
+  if dirExists nimcacheDir:
+    rmDir nimcacheDir
   if not dirExists outDir:
     mkDir outDir
 
@@ -125,25 +135,27 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
 
   let aFile = outDir & "/libsds.a"
   let aFileTmp = outDir & "/libsds_tmp.a"
-  let arch = getArch()
+  let cpu = getMyCpu()
+  let clangArch = if cpu == "amd64": "x86_64" else: cpu
 
   # 1) Generate C sources from Nim (no linking)
   # Use unique symbol prefix to avoid conflicts with other Nim libraries
   exec "nim c" &
-      " --nimcache:" & nimcacheDir & " --os:ios --cpu:" & arch &
+      " --nimcache:" & nimcacheDir & " --os:ios --cpu:" & cpu &
       " --compileOnly:on" &
-      " --noMain --mm:orc" &
+      " --noMain --mm:refc" &
       " --threads:on --opt:size --header" &
-      " --nimMainPrefix:libsds --skipParentCfg:on" &
+      " --nimMainPrefix:libsds" &
       " --cc:clang" &
       " -d:useMalloc" &
       " " & srcDir & "/libsds.nim"
 
   # 2) Compile all generated C files to object files with hidden visibility
   # This prevents symbol conflicts with other Nim libraries (e.g., libnim_status_client)
-  let clangFlags = "-arch " & arch & " -isysroot " & sdkPath &
-      " -I./vendor/nimbus-build-system/vendor/Nim/lib/" &
-      " -fembed-bitcode -miphoneos-version-min=16.0 -O2" &
+  let nimLibDir = getHomeDir() / ".choosenim/toolchains/nim-" & NimVersion & "/lib"
+  let clangFlags = "-arch " & clangArch & " -isysroot " & sdkPath &
+      " -I" & nimLibDir &
+      " -fembed-bitcode -miphoneos-version-min=16.2 -O2" &
       " -fvisibility=hidden"
 
   var objectFiles: seq[string] = @[]
@@ -167,12 +179,16 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
 
 task libsdsIOS, "Build the mobile bindings for iOS":
   let srcDir = "./library"
-  let sdkPath = getEnv("IOS_SDK_PATH")
+  var sdkPath = getEnv("IOS_SDK_PATH")
+  if sdkPath.len == 0:
+    let (detected, exitCode) = gorgeEx("xcrun --show-sdk-path --sdk iphoneos")
+    if exitCode == 0:
+      sdkPath = detected.strip()
   buildMobileIOS srcDir, sdkPath
 
 ### Mobile Android
 proc buildMobileAndroid(srcDir = ".", extra_params = "") =
-  let cpu = getArch()
+  let cpu = getMyCpu()
 
   let outDir = "build/"
   if not dirExists outDir:
