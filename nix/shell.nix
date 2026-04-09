@@ -1,6 +1,5 @@
 {
   pkgs ? import <nixpkgs> { },
-  nim ? null,
 }:
 
 let
@@ -12,7 +11,8 @@ in pkgs.mkShell {
   ];
 
   buildInputs = with pkgs; [
-    nim
+    nim-2_2
+    nimble
     which
     git
     cmake

@@ -68,10 +68,16 @@
         }
       );
 
-      devShells = forAllSystems (system: {
-        default = pkgsFor.${system}.callPackage ./nix/shell.nix {
-        };
-      });
+      devShells = forAllSystems (system:
+        let pkgs = pkgsFor.${system}; in {
+          default = pkgs.mkShell {
+            nativeBuildInputs = with pkgs; [
+              nim-2_2
+              nimble
+            ];
+          };
+        }
+      );
     };
 
 }

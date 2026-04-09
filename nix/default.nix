@@ -22,9 +22,60 @@ let
   revision = substring 0 8 (src.rev or src.dirtyRev or "00000000");
   version = tools.findKeyValue "^version = \"([a-f0-9.-]+)\"$" ../sds.nimble;
 
-  nimbleDeps = callPackage ./deps.nix {
-    inherit src version revision;
-  };
+  # Fetched dep sources, keyed by package name.
+  deps = import ./deps.nix { inherit pkgs; };
+
+  # nimble.lock metadata (version + checksums) for pkgs2 directory naming.
+  lockFile = builtins.fromJSON (builtins.readFile ../nimble.lock);
+  lockPkgs = lockFile.packages;
+
+  # nimble.paths for the Nim compiler (read by config.nims).
+  # Paths must be double-quoted so that NimScript can parse the include correctly.
+  nimblePaths = pkgs.writeText "nimble.paths" (
+    builtins.concatStringsSep "\n" (
+      [ "--noNimblePath" ] ++
+      builtins.concatMap (p: [ "--path:\"${p}\"" "--path:\"${p}/src\"" ])
+        (builtins.attrValues deps)
+    )
+  );
+
+  # Shell commands to populate pkgs2 with writable copies of only the Nim
+  # source files nimble needs for dependency resolution. Full source for
+  # compilation is provided via nimble.paths pointing to the Nix store.
+  # Using rsync (same file filter as the old fixed-output deps derivation).
+  # Each dir also gets a nimblemeta.json so nimble recognises it as installed
+  # and does not attempt to re-download the package.
+  pkgs2SetupCmds = lib.concatStringsSep "\n" (
+    lib.mapAttrsToList (name: dep:
+      let
+        meta = lockPkgs.${name};
+        dirName = "${name}-${meta.version}-${meta.checksums.sha1}";
+        nimbleMeta = pkgs.writeText "${name}-nimblemeta.json" (builtins.toJSON {
+          version = 1;
+          metaData = {
+            url = meta.url;
+            downloadMethod = "git";
+            vcsRevision = meta.vcsRevision;
+            files = [];
+            binaries = [];
+            specialVersions = [ meta.version ];
+          };
+        });
+      in ''
+        mkdir -p "$NIMBLE_DIR/pkgs2/${dirName}"
+        rsync -a \
+          --include='*/' \
+          --include='*.nim' \
+          --include='*.nims' \
+          --include='*.nimble' \
+          --include='*.json' \
+          --exclude='*' \
+          ${dep}/ "$NIMBLE_DIR/pkgs2/${dirName}/"
+        chmod -R u+w "$NIMBLE_DIR/pkgs2/${dirName}"
+        cp ${nimbleMeta} "$NIMBLE_DIR/pkgs2/${dirName}/nimblemeta.json"
+      ''
+    ) deps
+  );
 
 in stdenv.mkDerivation {
   pname = "nim-sds";
@@ -38,12 +89,12 @@ in stdenv.mkDerivation {
   };
 
   buildInputs = with pkgs; [
-    openssl gmp zip nim git nimble
+    openssl gmp zip nim-2_2 git nimble
   ];
 
   # Dependencies that should only exist in the build environment.
   nativeBuildInputs = with pkgs; [
-    nim cmake which patchelf nimbleDeps
+    nim-2_2 nimble rsync cmake which patchelf
   ] ++ optionals stdenv.isLinux [
     pkgs.lsb-release
   ];
@@ -52,14 +103,16 @@ in stdenv.mkDerivation {
     "V=${toString verbosity}"
   ];
 
-  # Provide dependencies via Nimble deps derivation.
   configurePhase = ''
     export NIMBLE_DIR=$NIX_BUILD_TOP/nimbledeps
-    cp -r ${nimbleDeps}/nimbledeps $NIMBLE_DIR
-    cp ${nimbleDeps}/nimble.paths ./
-    chmod 775 -R $NIMBLE_DIR
-    # Fix relative paths to absolute paths
-    sed -i "s|./nimbledeps|$NIMBLE_DIR|g" nimble.paths
+    mkdir -p $NIMBLE_DIR/pkgs2
+
+    # Populate pkgs2 with writable copies so nimble considers deps installed
+    # and does not attempt to download them (which fails in the Nix sandbox).
+    ${pkgs2SetupCmds}
+
+    # Write nimble.paths so config.nims passes --path: flags to the Nim compiler.
+    cp ${nimblePaths} ./nimble.paths
   '';
 
   installPhase = let
