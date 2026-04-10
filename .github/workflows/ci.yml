@@ -112,6 +112,18 @@ jobs:
         with:
           nim-version: '2.2.4'
 
+      # nim-lsquic (transitive dep via libp2p) contains boringssl submodule with
+      # deeply-nested test paths. Nimble's temp dir path + those file names exceed
+      # 260 chars even with core.longpaths=true because Nim's runtime doesn't use
+      # the \\?\ extended-path prefix. Redirect TEMP/TMP to a short root dir so
+      # nimble's working directory stays well under the limit.
+      - name: Shorten TEMP path for nimble
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\T | Out-Null
+          "TEMP=C:\T" >> $env:GITHUB_ENV
+          "TMP=C:\T"  >> $env:GITHUB_ENV
+
       - name: Install dependencies
         run: nimble setup -l
 
