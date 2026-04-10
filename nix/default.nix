@@ -1,10 +1,8 @@
 {
   pkgs,
   src ? ../.,
-  # Options: 0,1,2
-  verbosity ? 2,
-  # Make targets
-  targets ? ["libsds-android-arm64"],
+  # Nimble targets to build (task names from sds.nimble).
+  targets ? ["libsdsAndroidArm64"],
   # These are the only platforms tested in CI and considered stable.
   stableSystems ? ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" "x86_64-windows"],
 }:
@@ -14,7 +12,7 @@ let
   inherit (lib) any match substring optionals optionalString;
 
   # Check if build is for android platform.
-  containsAndroid = s: (match ".*android.*" s) != null;
+  containsAndroid = s: (match ".*[Aa]ndroid.*" s) != null;
   isAndroidBuild = any containsAndroid targets;
 
   tools = callPackage ./tools.nix {};
@@ -99,10 +97,6 @@ in stdenv.mkDerivation {
     pkgs.lsb-release
   ];
 
-  makeFlags = targets ++ [
-    "V=${toString verbosity}"
-  ];
-
   configurePhase = ''
     export NIMBLE_DIR=$NIX_BUILD_TOP/nimbledeps
     mkdir -p $NIMBLE_DIR/pkgs2
@@ -114,6 +108,10 @@ in stdenv.mkDerivation {
     # Write nimble.paths so config.nims passes --path: flags to the Nim compiler.
     cp ${nimblePaths} ./nimble.paths
   '';
+
+  buildPhase = lib.concatMapStringsSep "\n" (target: ''
+    nimble --verbose ${target}
+  '') targets;
 
   installPhase = let
     androidManifest = ''

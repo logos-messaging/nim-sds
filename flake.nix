@@ -47,14 +47,14 @@
           src = self;
         };
 
-        # All potential targets
+        # All potential targets — must match nimble task names in sds.nimble.
         allTargets = [
           "libsds"
-          "libsds-android-arm64"
-          "libsds-android-amd64"
-          "libsds-android-x86"
-          "libsds-android-arm"
-          "libsds-ios"
+          "libsdsAndroidArm64"
+          "libsdsAndroidAmd64"
+          "libsdsAndroidX86"
+          "libsdsAndroidArm"
+          "libsdsIOS"
         ];
 
         # Create a package for each target
@@ -65,6 +65,12 @@
       in
         allPackages // {
           default = allPackages.libsds;
+          # Convenience aliases matching old hyphenated names.
+          libsds-android-arm64 = allPackages.libsdsAndroidArm64;
+          libsds-android-amd64 = allPackages.libsdsAndroidAmd64;
+          libsds-android-x86   = allPackages.libsdsAndroidX86;
+          libsds-android-arm   = allPackages.libsdsAndroidArm;
+          libsds-ios           = allPackages.libsdsIOS;
         }
       );
 

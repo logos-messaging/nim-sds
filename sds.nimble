@@ -206,21 +206,108 @@ task libsdsIOS, "Build the mobile bindings for iOS":
   buildMobileIOS srcDir, sdkPath
 
 ### Mobile Android
+proc checkAndroidNdk() =
+  let ndkRoot = getEnv("ANDROID_NDK_ROOT")
+  if ndkRoot.len == 0:
+    quit """Error: ANDROID_NDK_ROOT is not set."""
+  if not dirExists(ndkRoot):
+    quit "Error: ANDROID_NDK_ROOT points to a non-existent directory: " & ndkRoot
+  # source.properties contains Pkg.Revision — present in every NDK since r10.
+  let propsFile = ndkRoot / "source.properties"
+  if not fileExists(propsFile):
+    quit "Error: " & ndkRoot & " does not look like a valid NDK (source.properties not found)."
+  let (props, _) = gorgeEx("cat " & propsFile)
+  var revision = ""
+  for line in props.splitLines():
+    if line.startsWith("Pkg.Revision"):
+      let parts = line.split('=')
+      if parts.len == 2:
+        revision = parts[1].strip()
+  if revision.len == 0:
+    quit "Error: Could not read NDK version from " & propsFile
+  echo "Android NDK version: " & revision
+
 proc buildMobileAndroid(srcDir = ".", extra_params = "") =
   let cpu = getMyCpu()
+  let ndkRoot = getEnv("ANDROID_NDK_ROOT")
+  let androidTarget = "30"
 
-  let outDir = "build/"
+  # Map Nim CPU name → NDK target triple and include dirname.
+  let (androidArch, archDirname) =
+    if cpu == "arm64":   ("aarch64-linux-android",  "aarch64-linux-android")
+    elif cpu == "amd64": ("x86_64-linux-android",   "x86_64-linux-android")
+    elif cpu == "i386":  ("i686-linux-android",      "i686-linux-android")
+    else:                ("armv7a-linux-androideabi","arm-linux-androideabi")
+
+  # NDK prebuilt toolchain — location differs by host OS.
+  let (hostOS, _) = gorgeEx("uname -s")
+  let ndkHostTag =
+    if hostOS.strip() == "Darwin": "darwin-x86_64"
+    else: "linux-x86_64"
+  let toolchainDir = ndkRoot / "toolchains/llvm/prebuilt" / ndkHostTag
+  let sysroot      = toolchainDir / "sysroot"
+  let ndkClang     = toolchainDir / "bin" / (androidArch & androidTarget & "-clang")
+
+  let outDir = "build"
   if not dirExists outDir:
     mkDir outDir
 
-  exec "nim c" & " --out:" & outDir &
-    "/libsds.so --threads:on --app:lib --opt:size --noMain --mm:refc --nimMainPrefix:libsds " &
-    "-d:chronicles_sinks=textlines[dynamic] --header --passL:-L" & outdir &
-    " --passL:-llog --cpu:" & cpu &
-    " --os:android -d:androidNDK -d:chronosEventEngine=epoll " & extra_params & " " &
-    srcDir & "/libsds.nim"
+  exec "nim c" &
+    " --out:" & outDir & "/libsds.so" &
+    " --threads:on --app:lib --opt:size --noMain --mm:refc --nimMainPrefix:libsds" &
+    " --cc:clang" &
+    " --clang.exe:\"" & ndkClang & "\"" &
+    " --clang.linkerexe:\"" & ndkClang & "\"" &
+    " --cpu:" & cpu &
+    " --os:android" &
+    " -d:androidNDK" &
+    " -d:chronosEventEngine=epoll" &
+    " --passC:\"--sysroot=" & sysroot & "\"" &
+    " --passL:\"--sysroot=" & sysroot & "\"" &
+    " --passC:\"--target=" & androidArch & androidTarget & "\"" &
+    " --passL:\"--target=" & androidArch & androidTarget & "\"" &
+    " --passC:\"-I" & sysroot & "/usr/include\"" &
+    " --passC:\"-I" & sysroot & "/usr/include/" & archDirname & "\"" &
+    " --passL:\"-L" & sysroot & "/usr/lib/" & archDirname & "/" & androidTarget & "\"" &
+    " --passL:-llog" &
+    " -d:chronicles_sinks=textlines[dynamic]" &
+    " --header" &
+    " " & extra_params &
+    " " & srcDir & "/libsds.nim"
 
-task libsdsAndroid, "Build the mobile bindings for Android":
+task libsdsAndroid, "Build the mobile bindings for Android (uses ARCH env var)":
+  checkAndroidNdk()
   let srcDir = "./library"
-  let extraParams = "-d:chronicles_log_level=ERROR"
-  buildMobileAndroid srcDir, extraParams
+  buildMobileAndroid srcDir, "-d:chronicles_log_level=ERROR"
+
+task libsdsAndroidArm64, "Build Android arm64 bindings":
+  checkAndroidNdk()
+  putEnv("ARCH", "arm64")
+  buildMobileAndroid "./library", "-d:chronicles_log_level=ERROR"
+
+task libsdsAndroidAmd64, "Build Android amd64 bindings":
+  checkAndroidNdk()
+  putEnv("ARCH", "amd64")
+  buildMobileAndroid "./library", "-d:chronicles_log_level=ERROR"
+
+task libsdsAndroidX86, "Build Android x86 bindings":
+  checkAndroidNdk()
+  putEnv("ARCH", "i386")
+  buildMobileAndroid "./library", "-d:chronicles_log_level=ERROR"
+
+task libsdsAndroidArm, "Build Android arm bindings":
+  checkAndroidNdk()
+  putEnv("ARCH", "arm")
+  buildMobileAndroid "./library", "-d:chronicles_log_level=ERROR"
+
+task libsds, "Build the shared library for the current platform":
+  when defined(macosx):
+    exec "nimble libsdsDynamicMac"
+  elif defined(windows):
+    exec "nimble libsdsDynamicWindows"
+  else:
+    exec "nimble libsdsDynamicLinux"
+
+task clean, "Remove build artifacts":
+  if dirExists "build":
+    rmDir "build"

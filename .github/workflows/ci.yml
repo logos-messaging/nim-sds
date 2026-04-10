@@ -148,8 +148,12 @@ jobs:
           path: build/
 
   build-android:
-    name: 'linux / libsdsAndroid'
+    name: 'linux / ${{ matrix.task }}'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [libsdsAndroidArm64, libsdsAndroidAmd64, libsdsAndroidX86]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -159,13 +163,20 @@ jobs:
         with:
           nim-version: '2.2.4'
 
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+
       - name: Install dependencies
         run: nimble setup -l
 
-      - name: Build libsdsAndroid
-        run: nimble libsdsAndroid
+      - name: Build ${{ matrix.task }}
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: nimble ${{ matrix.task }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: libsdsAndroid
+          name: ${{ matrix.task }}
           path: build/
