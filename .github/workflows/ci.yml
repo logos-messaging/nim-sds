@@ -101,6 +101,9 @@ jobs:
           - libsdsDynamicWindows
           - libsdsStaticWindows
     steps:
+      - name: Enable Git long paths
+        run: git config --global core.longpaths true
+
       - uses: actions/checkout@v4
         with:
           submodules: recursive
