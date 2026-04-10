@@ -162,7 +162,15 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
 
   # 2) Compile all generated C files to object files with hidden visibility
   # This prevents symbol conflicts with other Nim libraries (e.g., libnim_status_client)
-  let nimLibDir = getHomeDir() / ".choosenim/toolchains/nim-" & NimVersion & "/lib"
+  # Locate nimbase.h: try next to the nim binary first (jiro4989/setup-nim-action
+  # puts nim at .nim_runtime/bin/nim with lib/ alongside), then fall back to the
+  # choosenim toolchain directory (~/.choosenim/toolchains/nim-VERSION/lib/).
+  let (nimBin, _) = gorgeEx("which nim")
+  let nimLibFromBin = parentDir(parentDir(nimBin.strip())) / "lib"
+  let nimLibChoosenim = getHomeDir() / ".choosenim/toolchains/nim-" & NimVersion & "/lib"
+  let nimLibDir =
+    if fileExists(nimLibFromBin / "nimbase.h"): nimLibFromBin
+    else: nimLibChoosenim
   let clangFlags =
     "-arch " & clangArch & " -isysroot " & sdkPath & " -I" & nimLibDir &
     " -fembed-bitcode -miphoneos-version-min=16.2 -O2" & " -fvisibility=hidden"
