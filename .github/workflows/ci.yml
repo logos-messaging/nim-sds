@@ -1,0 +1,197 @@
+name: ci / nimble
+permissions:
+  contents: read
+  pull-requests: read
+  checks: write
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 'test / ${{ matrix.os }}'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+
+      - name: Install dependencies
+        run: nimble setup -l
+
+      - name: Run test suite
+        run: nimble test
+
+  build-linux:
+    name: 'linux / ${{ matrix.task }}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task:
+          - libsdsDynamicLinux
+          - libsdsStaticLinux
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+
+      - name: Install dependencies
+        run: nimble setup -l
+
+      - name: Build ${{ matrix.task }}
+        run: nimble ${{ matrix.task }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.task }}
+          path: build/
+
+  build-mac:
+    name: 'macos / ${{ matrix.task }}'
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task:
+          - libsdsDynamicMac
+          - libsdsStaticMac
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+
+      - name: Install dependencies
+        run: nimble setup -l
+
+      - name: Build ${{ matrix.task }}
+        run: nimble ${{ matrix.task }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.task }}
+          path: build/
+
+  build-windows:
+    name: 'windows / ${{ matrix.task }}'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task:
+          - libsdsDynamicWindows
+          - libsdsStaticWindows
+    steps:
+      - name: Enable Git long paths
+        run: git config --global core.longpaths true
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+
+      # nim-lsquic (transitive dep via libp2p) contains boringssl submodule with
+      # deeply-nested test paths. Nimble's temp dir path + those file names exceed
+      # 260 chars even with core.longpaths=true because Nim's runtime doesn't use
+      # the \\?\ extended-path prefix. Redirect TEMP/TMP to a short root dir so
+      # nimble's working directory stays well under the limit.
+      - name: Shorten TEMP path for nimble
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\T | Out-Null
+          "TEMP=C:\T" >> $env:GITHUB_ENV
+          "TMP=C:\T"  >> $env:GITHUB_ENV
+
+      - name: Install dependencies
+        run: nimble setup -l
+
+      - name: Build ${{ matrix.task }}
+        run: nimble ${{ matrix.task }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.task }}
+          path: build/
+
+  build-ios:
+    name: 'macos / libsdsIOS'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.2'
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+
+      - name: Install dependencies
+        run: nimble setup -l
+
+      - name: Build libsdsIOS
+        run: nimble libsdsIOS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libsdsIOS
+          path: build/
+
+  build-android:
+    name: 'linux / ${{ matrix.task }}'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [libsdsAndroidArm64, libsdsAndroidAmd64, libsdsAndroidX86]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.4'
+
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+
+      - name: Install dependencies
+        run: nimble setup -l
+
+      - name: Build ${{ matrix.task }}
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: nimble ${{ matrix.task }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.task }}
+          path: build/
