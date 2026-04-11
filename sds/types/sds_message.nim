@@ -9,6 +9,7 @@ type SdsMessage* = object
   channelId*: SdsChannelID
   content*: seq[byte]
   bloomFilter*: seq[byte]
+  senderId*: SdsParticipantID ## SDS-R: original sender's participant ID
   repairRequest*: seq[HistoryEntry]
     ## Capped list of missing entries requesting repair (SDS-R)
 
@@ -20,6 +21,7 @@ proc init*(
     channelId: SdsChannelID,
     content: seq[byte],
     bloomFilter: seq[byte],
+    senderId: SdsParticipantID = "",
     repairRequest: seq[HistoryEntry] = @[],
 ): T =
   return T(
@@ -29,5 +31,6 @@ proc init*(
     channelId: channelId,
     content: content,
     bloomFilter: bloomFilter,
+    senderId: senderId,
     repairRequest: repairRequest,
   )

@@ -37,6 +37,9 @@ proc encode*(msg: SdsMessage): ProtoBuffer =
   pb.write(5, msg.content)
   pb.write(6, msg.bloomFilter)
 
+  if msg.senderId.len > 0:
+    pb.write(7, msg.senderId)
+
   for entry in msg.repairRequest:
     let entryPb = encodeHistoryEntry(entry)
     pb.write(13, entryPb.buffer)
@@ -80,6 +83,9 @@ proc decode*(T: type SdsMessage, buffer: seq[byte]): ProtobufResult[T] =
 
   if not ?pb.getField(6, msg.bloomFilter):
     msg.bloomFilter = @[] # Empty if not present
+
+  # SDS-R: decode senderId (field 7, optional)
+  discard pb.getField(7, msg.senderId)
 
   # SDS-R: decode repair request (field 13, optional)
   var repairBuffers: seq[seq[byte]]

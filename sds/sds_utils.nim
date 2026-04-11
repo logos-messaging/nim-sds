@@ -25,6 +25,7 @@ proc cleanup*(rm: ReliabilityManager) {.raises: [].} =
           channel.outgoingRepairBuffer.clear()
           channel.incomingRepairBuffer.clear()
           channel.messageCache.clear()
+          channel.messageSenders.clear()
         rm.channels.clear()
     except Exception:
       error "Error during cleanup", error = getCurrentExceptionMsg()
@@ -128,18 +129,21 @@ proc isInResponseGroup*(
 proc getRecentHistoryEntries*(
     rm: ReliabilityManager, n: int, channelId: SdsChannelID
 ): seq[HistoryEntry] =
+  ## Get recent history entries for sending in causal history.
+  ## Populates retrieval hints and senderId (SDS-R) for each entry.
   try:
     if channelId in rm.channels:
       let channel = rm.channels[channelId]
       let recentMessageIds = channel.messageHistory[max(0, channel.messageHistory.len - n) .. ^1]
-      if rm.onRetrievalHint.isNil():
-        return toCausalHistory(recentMessageIds)
-      else:
-        var entries: seq[HistoryEntry] = @[]
-        for msgId in recentMessageIds:
-          let hint = rm.onRetrievalHint(msgId)
-          entries.add(newHistoryEntry(msgId, hint))
-        return entries
+      var entries: seq[HistoryEntry] = @[]
+      for msgId in recentMessageIds:
+        var entry = HistoryEntry(messageId: msgId)
+        if not rm.onRetrievalHint.isNil():
+          entry.retrievalHint = rm.onRetrievalHint(msgId)
+        if msgId in channel.messageSenders:
+          entry.senderId = channel.messageSenders[msgId]
+        entries.add(entry)
+      return entries
     else:
       return @[]
   except Exception:
@@ -246,6 +250,7 @@ proc removeChannel*(
         channel.outgoingRepairBuffer.clear()
         channel.incomingRepairBuffer.clear()
         channel.messageCache.clear()
+        channel.messageSenders.clear()
         rm.channels.del(channelId)
       return ok()
     except Exception:

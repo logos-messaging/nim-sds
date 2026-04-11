@@ -107,6 +107,7 @@ proc wrapOutgoingMessage*(
         channelId = channelId,
         content = message,
         bloomFilter = bfResult.get(),
+        senderId = rm.participantId,
         repairRequest = repairReqs,
       )
 
@@ -117,7 +118,16 @@ proc wrapOutgoingMessage*(
       channel.bloomFilter.add(msg.messageId)
       rm.addToHistory(msg.messageId, channelId)
 
-      return serializeMessage(msg)
+      # SDS-R: record sender for future causal-history entries
+      if rm.participantId.len > 0:
+        channel.messageSenders[msg.messageId] = rm.participantId
+
+      let serialized = serializeMessage(msg)
+      if serialized.isOk():
+        # SDS-R: cache serialized bytes so we can serve our own message on repair
+        if channel.messageCache.len < rm.config.maxMessageHistory:
+          channel.messageCache[msg.messageId] = serialized.get()
+      return serialized
     except Exception:
       error "Failed to wrap message",
         channelId = channelId, msg = getCurrentExceptionMsg()
@@ -177,6 +187,11 @@ proc unwrapReceivedMessage*(
 
     let channel = rm.getOrCreateChannel(channelId)
 
+    # SDS-R: opportunistic repair-buffer cleanup — applies to duplicates too,
+    # so rebroadcasts cancel redundant responses on peers that already have the message.
+    channel.outgoingRepairBuffer.del(msg.messageId)
+    channel.incomingRepairBuffer.del(msg.messageId)
+
     if msg.messageId in channel.messageHistory:
       return ok((msg.content, @[], channelId))
 
@@ -185,13 +200,13 @@ proc unwrapReceivedMessage*(
     rm.updateLamportTimestamp(msg.lamportTimestamp, channelId)
     rm.reviewAckStatus(msg)
 
-    # SDS-R: remove this message from repair buffers (dependency now met)
-    channel.outgoingRepairBuffer.del(msg.messageId)
-    channel.incomingRepairBuffer.del(msg.messageId)
-
     # SDS-R: cache the raw message for potential repair responses
     if channel.messageCache.len < rm.config.maxMessageHistory:
       channel.messageCache[msg.messageId] = message
+
+    # SDS-R: record sender so our future causal-history entries carry it
+    if msg.senderId.len > 0:
+      channel.messageSenders[msg.messageId] = msg.senderId
 
     # SDS-R: process incoming repair requests from this message
     let now = getTime()
@@ -228,6 +243,10 @@ proc unwrapReceivedMessage*(
           IncomingMessage.init(message = msg, missingDeps = initHashSet[SdsMessageID]())
       else:
         rm.addToHistory(msg.messageId, channelId)
+        # Unblock any buffered messages that were waiting on this one.
+        for pendingId, entry in channel.incomingBuffer:
+          if msg.messageId in entry.missingDeps:
+            channel.incomingBuffer[pendingId].missingDeps.excl(msg.messageId)
         rm.processIncomingBuffer(channelId)
         if not rm.onMessageReady.isNil():
           rm.onMessageReady(msg.messageId, channelId)
@@ -361,43 +380,47 @@ proc periodicSyncMessage(
       error "Error in periodic sync", msg = getCurrentExceptionMsg()
     await sleepAsync(chronos.seconds(rm.config.syncMessageInterval.inSeconds))
 
+proc runRepairSweep*(rm: ReliabilityManager) {.gcsafe, raises: [].} =
+  ## SDS-R: Runs a single pass of the repair sweep.
+  ## - Incoming: fires onRepairReady for expired T_resp entries and removes them
+  ## - Outgoing: drops entries past T_max window
+  ## Exposed so it can be driven directly in tests; also invoked by periodicRepairSweep.
+  try:
+    let now = getTime()
+    for channelId, channel in rm.channels:
+      try:
+        # Check incoming repair buffer for expired T_resp (time to rebroadcast)
+        var toRebroadcast: seq[SdsMessageID] = @[]
+        for msgId, entry in channel.incomingRepairBuffer:
+          if now >= entry.tResp:
+            toRebroadcast.add(msgId)
+
+        for msgId in toRebroadcast:
+          let entry = channel.incomingRepairBuffer[msgId]
+          channel.incomingRepairBuffer.del(msgId)
+          if not rm.onRepairReady.isNil():
+            rm.onRepairReady(entry.cachedMessage, channelId)
+
+        # Drop expired outgoing repair entries past T_max
+        var toRemove: seq[SdsMessageID] = @[]
+        let tMaxDuration = rm.config.repairTMax
+        for msgId, entry in channel.outgoingRepairBuffer:
+          if now - entry.tReq > tMaxDuration:
+            toRemove.add(msgId)
+        for msgId in toRemove:
+          channel.outgoingRepairBuffer.del(msgId)
+      except Exception:
+        error "Error in repair sweep for channel",
+          channelId = channelId, msg = getCurrentExceptionMsg()
+  except Exception:
+    error "Error in repair sweep", msg = getCurrentExceptionMsg()
+
 proc periodicRepairSweep(
     rm: ReliabilityManager
 ) {.async: (raises: [CancelledError]), gcsafe.} =
   ## SDS-R: Periodically checks repair buffers for expired entries.
-  ## - Incoming: fires onRepairReady for expired T_resp entries
-  ## - Outgoing: drops entries past T_max
   while true:
-    try:
-      let now = getTime()
-      for channelId, channel in rm.channels:
-        try:
-          # Check incoming repair buffer for expired T_resp (time to rebroadcast)
-          var toRebroadcast: seq[SdsMessageID] = @[]
-          for msgId, entry in channel.incomingRepairBuffer:
-            if now >= entry.tResp:
-              toRebroadcast.add(msgId)
-
-          for msgId in toRebroadcast:
-            let entry = channel.incomingRepairBuffer[msgId]
-            channel.incomingRepairBuffer.del(msgId)
-            if not rm.onRepairReady.isNil():
-              rm.onRepairReady(entry.cachedMessage, channelId)
-
-          # Drop expired outgoing repair entries past T_max
-          var toRemove: seq[SdsMessageID] = @[]
-          let tMaxDuration = rm.config.repairTMax
-          for msgId, entry in channel.outgoingRepairBuffer:
-            if now - entry.tReq > tMaxDuration:
-              toRemove.add(msgId)
-          for msgId in toRemove:
-            channel.outgoingRepairBuffer.del(msgId)
-        except Exception:
-          error "Error in repair sweep for channel",
-            channelId = channelId, msg = getCurrentExceptionMsg()
-    except Exception:
-      error "Error in periodic repair sweep", msg = getCurrentExceptionMsg()
-
+    rm.runRepairSweep()
     await sleepAsync(chronos.milliseconds(rm.config.repairSweepInterval.inMilliseconds))
 
 proc startPeriodicTasks*(rm: ReliabilityManager) =
@@ -418,6 +441,7 @@ proc resetReliabilityManager*(rm: ReliabilityManager): Result[void, ReliabilityE
         channel.outgoingRepairBuffer.clear()
         channel.incomingRepairBuffer.clear()
         channel.messageCache.clear()
+        channel.messageSenders.clear()
         channel.bloomFilter =
           RollingBloomFilter.init(rm.config.bloomFilterCapacity, rm.config.bloomFilterErrorRate)
       rm.channels.clear()

@@ -19,6 +19,8 @@ type ChannelContext* = ref object
   incomingRepairBuffer*: Table[SdsMessageID, IncomingRepairEntry]
   messageCache*: Table[SdsMessageID, seq[byte]]
     ## Cached serialized messages for repair responses
+  messageSenders*: Table[SdsMessageID, SdsParticipantID]
+    ## SDS-R: msgId -> original sender, used to populate causal-history senderId
 
 proc new*(T: type ChannelContext, bloomFilter: RollingBloomFilter): T =
   return T(
@@ -30,4 +32,5 @@ proc new*(T: type ChannelContext, bloomFilter: RollingBloomFilter): T =
     outgoingRepairBuffer: initTable[SdsMessageID, OutgoingRepairEntry](),
     incomingRepairBuffer: initTable[SdsMessageID, IncomingRepairEntry](),
     messageCache: initTable[SdsMessageID, seq[byte]](),
+    messageSenders: initTable[SdsMessageID, SdsParticipantID](),
   )
