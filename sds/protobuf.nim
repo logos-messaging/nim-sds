@@ -1,6 +1,9 @@
 import libp2p/protobuf/minprotobuf
 import endians
-import sds/[message, protobufutil, bloom, sds_utils]
+import ./types/[sds_message_id, history_entry, sds_message, reliability_error]
+import ./protobufutil
+import ./bloom
+import ./sds_utils
 
 proc encode*(msg: SdsMessage): ProtoBuffer =
   var pb = initProtoBuffer()
@@ -25,7 +28,7 @@ proc encode*(msg: SdsMessage): ProtoBuffer =
 
 proc decode*(T: type SdsMessage, buffer: seq[byte]): ProtobufResult[T] =
   let pb = initProtoBuffer(buffer)
-  var msg = SdsMessage()
+  var msg = SdsMessage.init("", 0, @[], "", @[], @[])
 
   if not ?pb.getField(1, msg.messageId):
     return err(ProtobufError.missingRequiredField("messageId"))
@@ -41,7 +44,7 @@ proc decode*(T: type SdsMessage, buffer: seq[byte]): ProtobufResult[T] =
     # New format: repeated HistoryEntry
     for histBuffer in historyBuffers:
       let entryPb = initProtoBuffer(histBuffer)
-      var entry: HistoryEntry
+      var entry = HistoryEntry.init("")
       if not ?entryPb.getField(1, entry.messageId):
         return err(ProtobufError.missingRequiredField("HistoryEntry.messageId"))
       # retrievalHint is optional
@@ -90,7 +93,6 @@ proc deserializeMessage*(data: seq[byte]): Result[SdsMessage, ReliabilityError] 
 proc serializeBloomFilter*(filter: BloomFilter): Result[seq[byte], ReliabilityError] =
   var pb = initProtoBuffer()
 
-  # Convert intArray to bytes
   try:
     var bytes = newSeq[byte](filter.intArray.len * sizeof(int))
     for i, val in filter.intArray:
@@ -134,7 +136,6 @@ proc deserializeBloomFilter*(data: seq[byte]): Result[BloomFilter, ReliabilityEr
     if not field1_Ok or not field2_Ok or not field3_Ok or not field4_Ok or not field5_Ok:
       return err(ReliabilityError.reDeserializationError)
 
-    # Convert bytes back to intArray
     var intArray = newSeq[int](bytes.len div sizeof(int))
     for i in 0 ..< intArray.len:
       var leVal: int
@@ -143,12 +144,12 @@ proc deserializeBloomFilter*(data: seq[byte]): Result[BloomFilter, ReliabilityEr
       littleEndian64(addr intArray[i], addr leVal)
 
     ok(
-      BloomFilter(
-        intArray: intArray,
-        capacity: int(cap),
-        errorRate: float(errRate) / 1_000_000,
-        kHashes: int(kHashes),
-        mBits: int(mBits),
+      BloomFilter.init(
+        capacity = int(cap),
+        errorRate = float(errRate) / 1_000_000,
+        kHashes = int(kHashes),
+        mBits = int(mBits),
+        intArray = intArray,
       )
     )
   except:

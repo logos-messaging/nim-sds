@@ -4,22 +4,9 @@
 
 import libp2p/protobuf/minprotobuf
 import libp2p/varint
+import ./types/protobuf_error
 
-export minprotobuf, varint
-
-type
-  ProtobufErrorKind* {.pure.} = enum
-    DecodeFailure
-    MissingRequiredField
-
-  ProtobufError* = object
-    case kind*: ProtobufErrorKind
-    of DecodeFailure:
-      error*: minprotobuf.ProtoError
-    of MissingRequiredField:
-      field*: string
-
-  ProtobufResult*[T] = Result[T, ProtobufError]
+export minprotobuf, varint, protobuf_error
 
 converter toProtobufError*(err: minprotobuf.ProtoError): ProtobufError =
   case err
@@ -29,4 +16,4 @@ converter toProtobufError*(err: minprotobuf.ProtoError): ProtobufError =
     ProtobufError(kind: ProtobufErrorKind.DecodeFailure, error: err)
 
 proc missingRequiredField*(T: type ProtobufError, field: string): T =
-  ProtobufError(kind: ProtobufErrorKind.MissingRequiredField, field: field)
+  ProtobufError.init(field)

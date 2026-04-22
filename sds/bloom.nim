@@ -3,13 +3,8 @@ import hashes
 import strutils
 import results
 import private/probabilities
-
-type BloomFilter* = object
-  capacity*: int
-  errorRate*: float
-  kHashes*: int
-  mBits*: int
-  intArray*: seq[int]
+import ./types/bloom_filter
+export bloom_filter
 
 {.push overflowChecks: off.} # Turn off overflow checks for hashing operations
 
@@ -21,12 +16,6 @@ proc hashN(item: string, n: int, maxValue: int): int =
     hashA = abs(hash(item)) mod maxValue # Use abs to handle negative hashes
     hashB = abs(hash(item & " b")) mod maxValue # string concatenation
   abs((hashA + n * hashB)) mod maxValue
-  #   # Use bit rotation for second hash instead of string concatenation if speed if preferred over FP-rate
-  #   # Rotate left by 21 bits (lower the rotation, higher the speed but higher the FP-rate too)
-  #   hashB = abs(
-  #     ((h shl 21) or (h shr (sizeof(int) * 8 - 21)))
-  #   ) mod maxValue
-  # abs((hashA + n.int64 * hashB)) mod maxValue
 
 {.pop.}
 
@@ -80,12 +69,12 @@ proc initializeBloomFilter*(
     mInts = 1 + mBits div (sizeof(int) * 8)
 
   ok(
-    BloomFilter(
-      capacity: capacity,
-      errorRate: errorRate,
-      kHashes: kHashes,
-      mBits: mBits,
-      intArray: newSeq[int](mInts),
+    BloomFilter.init(
+      capacity = capacity,
+      errorRate = errorRate,
+      kHashes = kHashes,
+      mBits = mBits,
+      intArray = newSeq[int](mInts),
     )
   )
 
