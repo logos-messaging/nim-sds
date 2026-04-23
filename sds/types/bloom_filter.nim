@@ -13,7 +13,7 @@ proc init*(
     mBits: int,
     intArray: seq[int],
 ): T =
-  T(
+  return T(
     capacity: capacity,
     errorRate: errorRate,
     kHashes: kHashes,

@@ -5,4 +5,4 @@ type HistoryEntry* = object
   retrievalHint*: seq[byte] ## Optional hint for efficient retrieval (e.g., Waku message hash)
 
 proc init*(T: type HistoryEntry, messageId: SdsMessageID, retrievalHint: seq[byte] = @[]): T =
-  T(messageId: messageId, retrievalHint: retrievalHint)
+  return T(messageId: messageId, retrievalHint: retrievalHint)

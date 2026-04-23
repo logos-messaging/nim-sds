@@ -33,7 +33,7 @@ proc init*(
     syncMessageInterval: Duration = DefaultSyncMessageInterval,
     bufferSweepInterval: Duration = DefaultBufferSweepInterval,
 ): T =
-  T(
+  return T(
     bloomFilterCapacity: bloomFilterCapacity,
     bloomFilterErrorRate: bloomFilterErrorRate,
     maxMessageHistory: maxMessageHistory,

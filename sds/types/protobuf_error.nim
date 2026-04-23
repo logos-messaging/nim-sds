@@ -16,7 +16,7 @@ type
   ProtobufResult*[T] = Result[T, ProtobufError]
 
 proc init*(T: type ProtobufError, error: minprotobuf.ProtoError): T =
-  T(kind: ProtobufErrorKind.DecodeFailure, error: error)
+  return T(kind: ProtobufErrorKind.DecodeFailure, error: error)
 
 proc init*(T: type ProtobufError, field: string): T =
-  T(kind: ProtobufErrorKind.MissingRequiredField, field: field)
+  return T(kind: ProtobufErrorKind.MissingRequiredField, field: field)

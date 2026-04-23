@@ -19,8 +19,9 @@ type ReliabilityManager* = ref object
   onRetrievalHint*: RetrievalHintProvider
 
 proc new*(T: type ReliabilityManager, config: ReliabilityConfig): T =
-  result = T(
+  let rm = T(
     channels: initTable[SdsChannelID, ChannelContext](),
     config: config,
   )
-  result.lock.initLock()
+  rm.lock.initLock()
+  return rm

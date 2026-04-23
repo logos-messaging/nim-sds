@@ -15,7 +15,7 @@ proc hashN(item: string, n: int, maxValue: int): int =
   let
     hashA = abs(hash(item)) mod maxValue # Use abs to handle negative hashes
     hashB = abs(hash(item & " b")) mod maxValue # string concatenation
-  abs((hashA + n * hashB)) mod maxValue
+  return abs((hashA + n * hashB)) mod maxValue
 
 {.pop.}
 
@@ -30,7 +30,7 @@ proc getMOverNBitsForK*(
     if probabilityTable[k][mOverN] < targetError:
       return ok(mOverN)
 
-  err(
+  return err(
     "Specified value of k and error rate not achievable using less than 4 bytes / element."
   )
 
@@ -68,7 +68,7 @@ proc initializeBloomFilter*(
     mBits = capacity * nBitsPerElem
     mInts = 1 + mBits div (sizeof(int) * 8)
 
-  ok(
+  return ok(
     BloomFilter.init(
       capacity = capacity,
       errorRate = errorRate,
@@ -80,19 +80,19 @@ proc initializeBloomFilter*(
 
 proc `$`*(bf: BloomFilter): string =
   ## Prints the configuration of the Bloom filter.
-  "Bloom filter with $1 capacity, $2 error rate, $3 hash functions, and requiring $4 bits of memory." %
-  [
-    $bf.capacity,
-    formatFloat(bf.errorRate, format = ffScientific, precision = 1),
-    $bf.kHashes,
-    $(bf.mBits div bf.capacity),
-  ]
+  return "Bloom filter with $1 capacity, $2 error rate, $3 hash functions, and requiring $4 bits of memory." %
+    [
+      $bf.capacity,
+      formatFloat(bf.errorRate, format = ffScientific, precision = 1),
+      $bf.kHashes,
+      $(bf.mBits div bf.capacity),
+    ]
 
 proc computeHashes(bf: BloomFilter, item: string): seq[int] =
   var hashes = newSeq[int](bf.kHashes)
   for i in 0 ..< bf.kHashes:
     hashes[i] = hashN(item, i, bf.mBits)
-  hashes
+  return hashes
 
 proc insert*(bf: var BloomFilter, item: string) =
   ## Insert an item (string) into the Bloom filter.
@@ -116,4 +116,4 @@ proc lookup*(bf: BloomFilter, item: string): bool =
       currentInt = bf.intArray[intAddress]
     if currentInt != (currentInt or (1 shl bitOffset)):
       return false
-  true
+  return true

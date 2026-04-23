@@ -22,7 +22,7 @@ proc init*(
     maxCapacity: int,
     messages: seq[SdsMessageID] = @[],
 ): T =
-  T(
+  return T(
     filter: filter,
     capacity: capacity,
     minCapacity: minCapacity,

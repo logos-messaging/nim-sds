@@ -19,7 +19,7 @@ proc init*(
     content: seq[byte],
     bloomFilter: seq[byte],
 ): T =
-  T(
+  return T(
     messageId: messageId,
     lamportTimestamp: lamportTimestamp,
     causalHistory: causalHistory,

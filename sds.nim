@@ -26,7 +26,7 @@ proc isAcknowledged*(
   if rbf.isSome():
     return rbf.get().contains(msg.message.messageId)
 
-  false
+  return false
 
 proc reviewAckStatus(rm: ReliabilityManager, msg: SdsMessage) {.gcsafe.} =
   var rbf: Option[RollingBloomFilter]

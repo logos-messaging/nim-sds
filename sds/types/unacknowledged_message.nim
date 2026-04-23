@@ -10,4 +10,4 @@ type UnacknowledgedMessage* = object
 proc init*(
     T: type UnacknowledgedMessage, message: SdsMessage, sendTime: Time, resendAttempts: int
 ): T =
-  T(message: message, sendTime: sendTime, resendAttempts: resendAttempts)
+  return T(message: message, sendTime: sendTime, resendAttempts: resendAttempts)

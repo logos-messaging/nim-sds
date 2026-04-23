@@ -16,7 +16,7 @@ proc new*(
     periodicSyncCb: PeriodicSyncCallback = nil,
     retrievalHintProvider: RetrievalHintProvider = nil,
 ): T =
-  T(
+  return T(
     messageReadyCb: messageReadyCb,
     messageSentCb: messageSentCb,
     missingDependenciesCb: missingDependenciesCb,

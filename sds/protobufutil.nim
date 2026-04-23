@@ -11,9 +11,9 @@ export minprotobuf, varint, protobuf_error
 converter toProtobufError*(err: minprotobuf.ProtoError): ProtobufError =
   case err
   of minprotobuf.ProtoError.RequiredFieldMissing:
-    ProtobufError(kind: ProtobufErrorKind.MissingRequiredField, field: "unknown")
+    return ProtobufError(kind: ProtobufErrorKind.MissingRequiredField, field: "unknown")
   else:
-    ProtobufError(kind: ProtobufErrorKind.DecodeFailure, error: err)
+    return ProtobufError(kind: ProtobufErrorKind.DecodeFailure, error: err)
 
 proc missingRequiredField*(T: type ProtobufError, field: string): T =
-  ProtobufError.init(field)
+  return ProtobufError.init(field)

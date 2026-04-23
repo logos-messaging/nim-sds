@@ -10,4 +10,4 @@ type IncomingMessage* {.requiresInit.} = object
 proc init*(
     T: type IncomingMessage, message: SdsMessage, missingDeps: HashSet[SdsMessageID]
 ): T =
-  T(message: message, missingDeps: missingDeps)
+  return T(message: message, missingDeps: missingDeps)

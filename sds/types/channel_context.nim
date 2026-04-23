@@ -13,7 +13,7 @@ type ChannelContext* = ref object
   incomingBuffer*: Table[SdsMessageID, IncomingMessage]
 
 proc new*(T: type ChannelContext, bloomFilter: RollingBloomFilter): T =
-  T(
+  return T(
     lamportTimestamp: 0,
     messageHistory: @[],
     bloomFilter: bloomFilter,

@@ -12,7 +12,7 @@ export
   reliability_manager
 
 proc defaultConfig*(): ReliabilityConfig =
-  ReliabilityConfig.init()
+  return ReliabilityConfig.init()
 
 proc cleanup*(rm: ReliabilityManager) {.raises: [].} =
   if not rm.isNil():
@@ -62,7 +62,7 @@ proc updateLamportTimestamp*(
       channelId = channelId, msgTs = msgTs, error = getCurrentExceptionMsg()
 
 proc newHistoryEntry*(messageId: SdsMessageID, retrievalHint: seq[byte] = @[]): HistoryEntry =
-  HistoryEntry.init(messageId, retrievalHint)
+  return HistoryEntry.init(messageId, retrievalHint)
 
 proc toCausalHistory*(messageIds: seq[SdsMessageID]): seq[HistoryEntry] =
   return messageIds.mapIt(newHistoryEntry(it))
@@ -116,13 +116,13 @@ proc getMessageHistory*(
   withLock rm.lock:
     try:
       if channelId in rm.channels:
-        result = rm.channels[channelId].messageHistory
+        return rm.channels[channelId].messageHistory
       else:
-        result = @[]
+        return @[]
     except Exception:
       error "Failed to get message history",
         channelId = channelId, error = getCurrentExceptionMsg()
-      result = @[]
+      return @[]
 
 proc getOutgoingBuffer*(
     rm: ReliabilityManager, channelId: SdsChannelID
@@ -130,13 +130,13 @@ proc getOutgoingBuffer*(
   withLock rm.lock:
     try:
       if channelId in rm.channels:
-        result = rm.channels[channelId].outgoingBuffer
+        return rm.channels[channelId].outgoingBuffer
       else:
-        result = @[]
+        return @[]
     except Exception:
       error "Failed to get outgoing buffer",
         channelId = channelId, error = getCurrentExceptionMsg()
-      result = @[]
+      return @[]
 
 proc getIncomingBuffer*(
     rm: ReliabilityManager, channelId: SdsChannelID
@@ -144,13 +144,13 @@ proc getIncomingBuffer*(
   withLock rm.lock:
     try:
       if channelId in rm.channels:
-        result = rm.channels[channelId].incomingBuffer
+        return rm.channels[channelId].incomingBuffer
       else:
-        result = initTable[SdsMessageID, IncomingMessage]()
+        return initTable[SdsMessageID, IncomingMessage]()
     except Exception:
       error "Failed to get incoming buffer",
         channelId = channelId, error = getCurrentExceptionMsg()
-      result = initTable[SdsMessageID, IncomingMessage]()
+      return initTable[SdsMessageID, IncomingMessage]()
 
 proc getOrCreateChannel*(
     rm: ReliabilityManager, channelId: SdsChannelID
@@ -160,7 +160,7 @@ proc getOrCreateChannel*(
       rm.channels[channelId] = ChannelContext.new(
         RollingBloomFilter.init(rm.config.bloomFilterCapacity, rm.config.bloomFilterErrorRate)
       )
-    result = rm.channels[channelId]
+    return rm.channels[channelId]
   except Exception:
     error "Failed to get or create channel",
       channelId = channelId, error = getCurrentExceptionMsg()

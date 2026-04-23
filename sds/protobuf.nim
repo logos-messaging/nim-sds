@@ -24,7 +24,7 @@ proc encode*(msg: SdsMessage): ProtoBuffer =
   pb.write(6, msg.bloomFilter)
   pb.finish()
 
-  pb
+  return pb
 
 proc decode*(T: type SdsMessage, buffer: seq[byte]): ProtobufResult[T] =
   let pb = initProtoBuffer(buffer)
@@ -66,7 +66,7 @@ proc decode*(T: type SdsMessage, buffer: seq[byte]): ProtobufResult[T] =
   if not ?pb.getField(6, msg.bloomFilter):
     msg.bloomFilter = @[] # Empty if not present
 
-  ok(msg)
+  return ok(msg)
 
 proc extractChannelId*(data: seq[byte]): Result[SdsChannelID, ReliabilityError] =
   ## For extraction of channel ID without full message deserialization
@@ -77,18 +77,18 @@ proc extractChannelId*(data: seq[byte]): Result[SdsChannelID, ReliabilityError] 
       return err(ReliabilityError.reDeserializationError)
     if not fieldOk:
       return err(ReliabilityError.reDeserializationError)
-    ok(channelId)
+    return ok(channelId)
   except:
-    err(ReliabilityError.reDeserializationError)
+    return err(ReliabilityError.reDeserializationError)
 
 proc serializeMessage*(msg: SdsMessage): Result[seq[byte], ReliabilityError] =
   let pb = encode(msg)
-  ok(pb.buffer)
+  return ok(pb.buffer)
 
 proc deserializeMessage*(data: seq[byte]): Result[SdsMessage, ReliabilityError] =
   let msg = SdsMessage.decode(data).valueOr:
     return err(ReliabilityError.reDeserializationError)
-  ok(msg)
+  return ok(msg)
 
 proc serializeBloomFilter*(filter: BloomFilter): Result[seq[byte], ReliabilityError] =
   var pb = initProtoBuffer()
@@ -110,7 +110,7 @@ proc serializeBloomFilter*(filter: BloomFilter): Result[seq[byte], ReliabilityEr
     return err(ReliabilityError.reSerializationError)
 
   pb.finish()
-  ok(pb.buffer)
+  return ok(pb.buffer)
 
 proc deserializeBloomFilter*(data: seq[byte]): Result[BloomFilter, ReliabilityError] =
   if data.len == 0:
@@ -143,7 +143,7 @@ proc deserializeBloomFilter*(data: seq[byte]): Result[BloomFilter, ReliabilityEr
       copyMem(addr leVal, unsafeAddr bytes[start], sizeof(int))
       littleEndian64(addr intArray[i], addr leVal)
 
-    ok(
+    return ok(
       BloomFilter.init(
         capacity = int(cap),
         errorRate = float(errRate) / 1_000_000,

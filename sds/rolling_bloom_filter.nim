@@ -93,4 +93,4 @@ proc add*(rbf: var RollingBloomFilter, messageId: SdsMessageID) {.gcsafe.} =
 
 proc contains*(rbf: RollingBloomFilter, messageId: SdsMessageID): bool =
   ## Checks if a message ID is in the rolling bloom filter.
-  rbf.filter.lookup(cast[string](messageId))
+  return rbf.filter.lookup(cast[string](messageId))
