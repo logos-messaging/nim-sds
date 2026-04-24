@@ -29,17 +29,6 @@ jobs:
           - system: x86_64-linux
             runs_on: [self-hosted, Linux, X64]
 
-        # Nimble segfaults on MacOS hosts.
-        exclude:
-          - system: aarch64-darwin
-            nixpkg: libsds-android-arm64
-          - system: aarch64-darwin
-            nixpkg: libsds-android-amd64
-          - system: aarch64-darwin
-            nixpkg: libsds-android-x86
-          - system: aarch64-darwin
-            nixpkg: libsds-android-arm
-
     name: '${{ matrix.system }} / ${{ matrix.nixpkg }}'
     runs-on: ${{ matrix.runs_on }}
     steps:

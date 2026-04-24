@@ -35,6 +35,19 @@
               androidPkgs = final.androidEnvCustom.pkgs;
               androidShell = final.androidEnvCustom.shell;
             })
+
+            (final: prev: {
+              nimble = prev.nimble.overrideAttrs (old: {
+                src = prev.fetchFromGitHub {
+                  version = "0.22.0";
+                  owner = "nim-lang";
+                  repo = "nimble";
+                  rev = "802e158ddce88c93367ebd9b3c66714b215a7928";
+                  hash = "sha256-m0i6JOwdxvp33XAr9XJ1Daly+4DOLPTUDNXKCHJj3I8=";
+                  fetchSubmodules = true;
+                };
+              });
+            })
           ];
         }
       );
