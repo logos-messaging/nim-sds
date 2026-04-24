@@ -228,7 +228,7 @@ suite "Reliability Mechanisms":
 
     # Create a message with bloom filter containing our message
     var otherPartyBloomFilter =
-      newRollingBloomFilter(DefaultBloomFilterCapacity, DefaultBloomFilterErrorRate)
+      RollingBloomFilter.init(DefaultBloomFilterCapacity, DefaultBloomFilterErrorRate)
     otherPartyBloomFilter.add(id1)
 
     let bfResult = serializeBloomFilter(otherPartyBloomFilter.filter)

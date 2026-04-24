@@ -1,35 +1,14 @@
-import std/[times, sets]
+import ./types/sds_message_id
+import ./types/history_entry
+import ./types/sds_message
+import ./types/unacknowledged_message
+import ./types/incoming_message
+import ./types/reliability_config
 
-type
-  SdsMessageID* = string
-  SdsChannelID* = string
-
-  HistoryEntry* = object
-    messageId*: SdsMessageID
-    retrievalHint*: seq[byte]  ## Optional hint for efficient retrieval (e.g., Waku message hash)
-
-  SdsMessage* = object
-    messageId*: SdsMessageID
-    lamportTimestamp*: int64
-    causalHistory*: seq[HistoryEntry]
-    channelId*: SdsChannelID
-    content*: seq[byte]
-    bloomFilter*: seq[byte]
-
-  UnacknowledgedMessage* = object
-    message*: SdsMessage
-    sendTime*: Time
-    resendAttempts*: int
-
-  IncomingMessage* = object
-    message*: SdsMessage
-    missingDeps*: HashSet[SdsMessageID]
-
-const
-  DefaultMaxMessageHistory* = 1000
-  DefaultMaxCausalHistory* = 10
-  DefaultResendInterval* = initDuration(seconds = 60)
-  DefaultMaxResendAttempts* = 5
-  DefaultSyncMessageInterval* = initDuration(seconds = 30)
-  DefaultBufferSweepInterval* = initDuration(seconds = 60)
-  MaxMessageSize* = 1024 * 1024 # 1 MB
+export
+  sds_message_id,
+  history_entry,
+  sds_message,
+  unacknowledged_message,
+  incoming_message,
+  reliability_config

@@ -3,13 +3,8 @@ import hashes
 import strutils
 import results
 import private/probabilities
-
-type BloomFilter* = object
-  capacity*: int
-  errorRate*: float
-  kHashes*: int
-  mBits*: int
-  intArray*: seq[int]
+import ./types/bloom_filter
+export bloom_filter
 
 {.push overflowChecks: off.} # Turn off overflow checks for hashing operations
 
@@ -20,13 +15,7 @@ proc hashN(item: string, n: int, maxValue: int): int =
   let
     hashA = abs(hash(item)) mod maxValue # Use abs to handle negative hashes
     hashB = abs(hash(item & " b")) mod maxValue # string concatenation
-  abs((hashA + n * hashB)) mod maxValue
-  #   # Use bit rotation for second hash instead of string concatenation if speed if preferred over FP-rate
-  #   # Rotate left by 21 bits (lower the rotation, higher the speed but higher the FP-rate too)
-  #   hashB = abs(
-  #     ((h shl 21) or (h shr (sizeof(int) * 8 - 21)))
-  #   ) mod maxValue
-  # abs((hashA + n.int64 * hashB)) mod maxValue
+  return abs((hashA + n * hashB)) mod maxValue
 
 {.pop.}
 
@@ -41,7 +30,7 @@ proc getMOverNBitsForK*(
     if probabilityTable[k][mOverN] < targetError:
       return ok(mOverN)
 
-  err(
+  return err(
     "Specified value of k and error rate not achievable using less than 4 bytes / element."
   )
 
@@ -79,31 +68,31 @@ proc initializeBloomFilter*(
     mBits = capacity * nBitsPerElem
     mInts = 1 + mBits div (sizeof(int) * 8)
 
-  ok(
-    BloomFilter(
-      capacity: capacity,
-      errorRate: errorRate,
-      kHashes: kHashes,
-      mBits: mBits,
-      intArray: newSeq[int](mInts),
+  return ok(
+    BloomFilter.init(
+      capacity = capacity,
+      errorRate = errorRate,
+      kHashes = kHashes,
+      mBits = mBits,
+      intArray = newSeq[int](mInts),
     )
   )
 
 proc `$`*(bf: BloomFilter): string =
   ## Prints the configuration of the Bloom filter.
-  "Bloom filter with $1 capacity, $2 error rate, $3 hash functions, and requiring $4 bits of memory." %
-  [
-    $bf.capacity,
-    formatFloat(bf.errorRate, format = ffScientific, precision = 1),
-    $bf.kHashes,
-    $(bf.mBits div bf.capacity),
-  ]
+  return "Bloom filter with $1 capacity, $2 error rate, $3 hash functions, and requiring $4 bits of memory." %
+    [
+      $bf.capacity,
+      formatFloat(bf.errorRate, format = ffScientific, precision = 1),
+      $bf.kHashes,
+      $(bf.mBits div bf.capacity),
+    ]
 
 proc computeHashes(bf: BloomFilter, item: string): seq[int] =
   var hashes = newSeq[int](bf.kHashes)
   for i in 0 ..< bf.kHashes:
     hashes[i] = hashN(item, i, bf.mBits)
-  hashes
+  return hashes
 
 proc insert*(bf: var BloomFilter, item: string) =
   ## Insert an item (string) into the Bloom filter.
@@ -127,4 +116,4 @@ proc lookup*(bf: BloomFilter, item: string): bool =
       currentInt = bf.intArray[intAddress]
     if currentInt != (currentInt or (1 shl bitOffset)):
       return false
-  true
+  return true
