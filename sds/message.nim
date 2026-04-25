@@ -3,6 +3,7 @@ import ./types/history_entry
 import ./types/sds_message
 import ./types/unacknowledged_message
 import ./types/incoming_message
+import ./types/repair_entry
 import ./types/reliability_config
 
 export
@@ -11,4 +12,5 @@ export
   sds_message,
   unacknowledged_message,
   incoming_message,
+  repair_entry,
   reliability_config

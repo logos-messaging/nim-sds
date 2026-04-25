@@ -16,7 +16,7 @@ import
   sds,
   ./events/[
     json_message_ready_event, json_message_sent_event, json_missing_dependencies_event,
-    json_periodic_sync_event,
+    json_periodic_sync_event, json_repair_ready_event,
   ]
 
 ################################################################################
@@ -114,6 +114,11 @@ proc onPeriodicSync(ctx: ptr SdsContext): PeriodicSyncCallback =
     callEventCallback(ctx, "onPeriodicSync"):
       $JsonPeriodicSyncEvent.new()
 
+proc onRepairReady(ctx: ptr SdsContext): RepairReadyCallback =
+  return proc(message: seq[byte], channelId: SdsChannelID) {.gcsafe.} =
+    callEventCallback(ctx, "onRepairReady"):
+      $JsonRepairReadyEvent.new(message, channelId)
+
 proc onRetrievalHint(ctx: ptr SdsContext): RetrievalHintProvider =
   return proc(messageId: SdsMessageID): seq[byte] {.gcsafe.} =
     if isNil(ctx.retrievalHintProvider):
@@ -173,12 +178,17 @@ proc initializeLibrary() {.exported.} =
 ################################################################################
 ### Exported procs
 
-proc SdsNewReliabilityManager(
-    callback: SdsCallBack, userData: pointer
-): pointer {.dynlib, exportc, cdecl.} =
+proc createManager(
+    participantId: cstring,
+    configJson: cstring,
+    callback: SdsCallBack,
+    userData: pointer,
+): pointer =
+  ## Shared implementation for SdsNewReliabilityManager and
+  ## SdsNewReliabilityManagerWithConfig. Either argument may be NULL or empty
+  ## to indicate "use defaults".
   initializeLibrary()
 
-  ## Creates a new instance of the Reliability Manager.
   if isNil(callback):
     echo "error: missing callback in NewReliabilityManager"
     return nil
@@ -196,13 +206,17 @@ proc SdsNewReliabilityManager(
     missingDependenciesCb: onMissingDependencies(ctx),
     periodicSyncCb: onPeriodicSync(ctx),
     retrievalHintProvider: onRetrievalHint(ctx),
+    repairReadyCb: onRepairReady(ctx),
   )
+
+  let pId: cstring = if participantId.isNil: cstring"" else: participantId
+  let cfg: cstring = if configJson.isNil: cstring"" else: configJson
 
   let retCode = handleRequest(
     ctx,
     RequestType.LIFECYCLE,
     SdsLifecycleRequest.createShared(
-      SdsLifecycleMsgType.CREATE_RELIABILITY_MANAGER, nil, appCallbacks
+      SdsLifecycleMsgType.CREATE_RELIABILITY_MANAGER, "", appCallbacks, pId, cfg
     ),
     callback,
     userData,
@@ -212,6 +226,26 @@ proc SdsNewReliabilityManager(
     return nil
 
   return ctx
+
+proc SdsNewReliabilityManager(
+    callback: SdsCallBack, userData: pointer
+): pointer {.dynlib, exportc, cdecl.} =
+  ## Back-compat shim. Constructs a manager with empty participantId (SDS-R
+  ## disabled) and the default ReliabilityConfig. New code should use
+  ## SdsNewReliabilityManagerWithConfig.
+  return createManager(nil, nil, callback, userData)
+
+proc SdsNewReliabilityManagerWithConfig(
+    participantId: cstring,
+    configJson: cstring,
+    callback: SdsCallBack,
+    userData: pointer,
+): pointer {.dynlib, exportc, cdecl.} =
+  ## Creates a new instance of the Reliability Manager with an explicit
+  ## participantId (required for SDS-R) and a JSON-encoded ReliabilityConfig.
+  ## Either argument may be NULL or empty to fall back to defaults; missing
+  ## fields inside the JSON also fall back to per-field defaults.
+  return createManager(participantId, configJson, callback, userData)
 
 proc SdsSetEventCallback(
     ctx: ptr SdsContext, callback: SdsCallBack, userData: pointer
@@ -374,6 +408,38 @@ proc SdsStartPeriodicTasks(
     ctx,
     RequestType.LIFECYCLE,
     SdsLifecycleRequest.createShared(SdsLifecycleMsgType.START_PERIODIC_TASKS),
+    callback,
+    userData,
+  )
+
+proc SdsRemoveChannel(
+    ctx: ptr SdsContext,
+    channelId: cstring,
+    callback: SdsCallBack,
+    userData: pointer,
+): cint {.dynlib, exportc.} =
+  ## Removes a channel and its associated state from the Reliability Manager.
+  ## Use this when a user leaves a channel to release per-channel buffers,
+  ## bloom filter, message cache, and SDS-R repair state.
+  initializeLibrary()
+  checkLibsdsParams(ctx, callback, userData)
+
+  if channelId == nil:
+    let msg = "libsds error: " & "channel ID pointer is NULL"
+    callback(RET_ERR, unsafeAddr msg[0], cast[csize_t](len(msg)), userData)
+    return RET_ERR
+
+  if $channelId == "":
+    let msg = "libsds error: " & "channel ID is empty string"
+    callback(RET_ERR, unsafeAddr msg[0], cast[csize_t](len(msg)), userData)
+    return RET_ERR
+
+  handleRequest(
+    ctx,
+    RequestType.LIFECYCLE,
+    SdsLifecycleRequest.createShared(
+      SdsLifecycleMsgType.REMOVE_CHANNEL, channelId
+    ),
     callback,
     userData,
   )

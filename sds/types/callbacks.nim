@@ -16,3 +16,5 @@ type
   RetrievalHintProvider* = proc(messageId: SdsMessageID): seq[byte] {.gcsafe.}
 
   PeriodicSyncCallback* = proc() {.gcsafe, raises: [].}
+
+  RepairReadyCallback* = proc(message: seq[byte], channelId: SdsChannelID) {.gcsafe.}

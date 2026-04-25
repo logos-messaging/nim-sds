@@ -28,6 +28,37 @@ typedef void (*SdsRetrievalHintProvider) (const char* messageId, char** hint, si
 
 void* SdsNewReliabilityManager(SdsCallBack callback, void* userData);
 
+// Construct a Reliability Manager with an explicit participant ID and a
+// JSON-encoded ReliabilityConfig.
+//
+// participantId: stable, non-empty identifier for SDS-R. Pass NULL or "" to
+//                disable SDS-R (the manager will not request or answer
+//                repairs). It MUST be set-once at construction; do not change
+//                it across the lifetime of the manager.
+// configJson:    JSON object with optional fields for ReliabilityConfig.
+//                Pass NULL or "" to use the full default config. Missing
+//                fields fall back to per-field defaults. Duration fields use
+//                the suffix "Ms" (integer milliseconds).
+//
+// Recognised JSON keys:
+//   bloomFilterCapacity      (int,    default 10000)
+//   bloomFilterErrorRate     (float,  default 0.001)
+//   maxMessageHistory        (int,    default 1000)
+//   maxCausalHistory         (int,    default 10)
+//   resendIntervalMs         (int,    default 60000)
+//   maxResendAttempts        (int,    default 5)
+//   syncMessageIntervalMs    (int,    default 30000)
+//   bufferSweepIntervalMs    (int,    default 60000)
+//   repairTMinMs             (int,    default 30000)
+//   repairTMaxMs             (int,    default 300000)
+//   numResponseGroups        (int,    default 1)
+//   maxRepairRequests        (int,    default 3)
+//   repairSweepIntervalMs    (int,    default 5000)
+void* SdsNewReliabilityManagerWithConfig(const char* participantId,
+                    const char* configJson,
+                    SdsCallBack callback,
+                    void* userData);
+
 void SdsSetEventCallback(void* ctx, SdsCallBack callback, void* userData);
 
 void SdsSetRetrievalHintProvider(void* ctx, SdsRetrievalHintProvider callback, void* userData);
@@ -59,6 +90,13 @@ int SdsMarkDependenciesMet(void* ctx,
 
 int SdsStartPeriodicTasks(void* ctx, SdsCallBack callback, void* userData);
 
+// Removes a channel and frees its per-channel state (buffers, bloom filter,
+// message cache, SDS-R repair entries). Safe to call on a channel that does
+// not exist; returns RET_OK in that case.
+int SdsRemoveChannel(void* ctx,
+                    const char* channelId,
+                    SdsCallBack callback,
+                    void* userData);
 
 
 #ifdef __cplusplus
