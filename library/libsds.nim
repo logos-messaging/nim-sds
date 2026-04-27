@@ -141,7 +141,8 @@ proc onRetrievalHint(ctx: ptr SdsContext): RetrievalHintProvider =
 
 # Every Nim library must have this function called - the name is derived from
 # the `--nimMainPrefix` command line option
-proc libsdsNimMain() {.importc.}
+when isMainModule:
+  proc libsdsNimMain() {.importc.}
 
 # To control when the library has been initialized
 var initialized: Atomic[bool]
@@ -158,7 +159,8 @@ proc initializeLibrary() {.exported.} =
   if not initialized.exchange(true):
     ## Every Nim library needs to call `<yourprefix>NimMain` once exactly, to initialize the Nim runtime.
     ## Being `<yourprefix>` the value given in the optional compilation flag --nimMainPrefix:yourprefix
-    libsdsNimMain()
+    when isMainModule:
+      libsdsNimMain()
     ctxPoolLock.initLock() # ensure the lock is initialized once (fix Windows crash)
   when declared(setupForeignThreadGc):
     setupForeignThreadGc()
