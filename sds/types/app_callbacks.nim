@@ -7,6 +7,7 @@ type AppCallbacks* = ref object
   missingDependenciesCb*: MissingDependenciesCallback
   periodicSyncCb*: PeriodicSyncCallback
   retrievalHintProvider*: RetrievalHintProvider
+  repairReadyCb*: RepairReadyCallback
 
 proc new*(
     T: type AppCallbacks,
@@ -15,6 +16,7 @@ proc new*(
     missingDependenciesCb: MissingDependenciesCallback = nil,
     periodicSyncCb: PeriodicSyncCallback = nil,
     retrievalHintProvider: RetrievalHintProvider = nil,
+    repairReadyCb: RepairReadyCallback = nil,
 ): T =
   return T(
     messageReadyCb: messageReadyCb,
@@ -22,4 +24,5 @@ proc new*(
     missingDependenciesCb: missingDependenciesCb,
     periodicSyncCb: periodicSyncCb,
     retrievalHintProvider: retrievalHintProvider,
+    repairReadyCb: repairReadyCb,
   )

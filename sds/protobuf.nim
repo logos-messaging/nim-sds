@@ -5,6 +5,26 @@ import ./protobufutil
 import ./bloom
 import ./sds_utils
 
+proc encodeHistoryEntry*(entry: HistoryEntry): ProtoBuffer =
+  var entryPb = initProtoBuffer()
+  entryPb.write(1, entry.messageId)
+  if entry.retrievalHint.len > 0:
+    entryPb.write(2, entry.retrievalHint)
+  if entry.senderId.len > 0:
+    entryPb.write(3, entry.senderId.string)
+  entryPb.finish()
+  entryPb
+
+proc decodeHistoryEntry*(entryPb: ProtoBuffer): ProtobufResult[HistoryEntry] =
+  var entry = HistoryEntry.init("")
+  if not ?entryPb.getField(1, entry.messageId):
+    return err(ProtobufError.missingRequiredField("HistoryEntry.messageId"))
+  discard entryPb.getField(2, entry.retrievalHint)
+  var senderIdStr: string
+  if entryPb.getField(3, senderIdStr).valueOr(false):
+    entry.senderId = senderIdStr.SdsParticipantID
+  ok(entry)
+
 proc encode*(msg: SdsMessage): ProtoBuffer =
   var pb = initProtoBuffer()
 
@@ -12,16 +32,20 @@ proc encode*(msg: SdsMessage): ProtoBuffer =
   pb.write(2, uint64(msg.lamportTimestamp))
 
   for entry in msg.causalHistory:
-    var entryPb = initProtoBuffer()
-    entryPb.write(1, entry.messageId)
-    if entry.retrievalHint.len > 0:
-      entryPb.write(2, entry.retrievalHint)
-    entryPb.finish()
+    let entryPb = encodeHistoryEntry(entry)
     pb.write(3, entryPb.buffer)
 
   pb.write(4, msg.channelId)
   pb.write(5, msg.content)
   pb.write(6, msg.bloomFilter)
+
+  if msg.senderId.len > 0:
+    pb.write(7, msg.senderId.string)
+
+  for entry in msg.repairRequest:
+    let entryPb = encodeHistoryEntry(entry)
+    pb.write(13, entryPb.buffer)
+
   pb.finish()
 
   return pb
@@ -44,11 +68,7 @@ proc decode*(T: type SdsMessage, buffer: seq[byte]): ProtobufResult[T] =
     # New format: repeated HistoryEntry
     for histBuffer in historyBuffers:
       let entryPb = initProtoBuffer(histBuffer)
-      var entry = HistoryEntry.init("")
-      if not ?entryPb.getField(1, entry.messageId):
-        return err(ProtobufError.missingRequiredField("HistoryEntry.messageId"))
-      # retrievalHint is optional
-      discard entryPb.getField(2, entry.retrievalHint)
+      let entry = ?decodeHistoryEntry(entryPb)
       msg.causalHistory.add(entry)
   else:
     # Try old format: repeated string
@@ -65,6 +85,19 @@ proc decode*(T: type SdsMessage, buffer: seq[byte]): ProtobufResult[T] =
 
   if not ?pb.getField(6, msg.bloomFilter):
     msg.bloomFilter = @[] # Empty if not present
+
+  # SDS-R: decode senderId (field 7, optional)
+  var msgSenderIdStr: string
+  if pb.getField(7, msgSenderIdStr).valueOr(false):
+    msg.senderId = msgSenderIdStr.SdsParticipantID
+
+  # SDS-R: decode repair request (field 13, optional)
+  var repairBuffers: seq[seq[byte]]
+  if pb.getRepeatedField(13, repairBuffers).isOk():
+    for repairBuffer in repairBuffers:
+      let entryPb = initProtoBuffer(repairBuffer)
+      let entry = ?decodeHistoryEntry(entryPb)
+      msg.repairRequest.add(entry)
 
   return ok(msg)
 

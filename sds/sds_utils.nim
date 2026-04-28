@@ -1,15 +1,15 @@
-import std/[locks, tables, sequtils]
+import std/[times, locks, tables, sequtils, hashes]
 import chronicles, results
 import ./rolling_bloom_filter
 import ./types/[
   sds_message_id, history_entry, sds_message, unacknowledged_message, incoming_message,
-  reliability_error, callbacks, app_callbacks, reliability_config, channel_context,
-  reliability_manager,
+  reliability_error, callbacks, app_callbacks, reliability_config, repair_entry,
+  channel_context, reliability_manager,
 ]
 export
   sds_message_id, history_entry, sds_message, unacknowledged_message, incoming_message,
-  reliability_error, callbacks, app_callbacks, reliability_config, channel_context,
-  reliability_manager
+  reliability_error, callbacks, app_callbacks, reliability_config, repair_entry,
+  channel_context, reliability_manager
 
 proc defaultConfig*(): ReliabilityConfig =
   return ReliabilityConfig.init()
@@ -22,6 +22,10 @@ proc cleanup*(rm: ReliabilityManager) {.raises: [].} =
           channel.outgoingBuffer.setLen(0)
           channel.incomingBuffer.clear()
           channel.messageHistory.setLen(0)
+          channel.outgoingRepairBuffer.clear()
+          channel.incomingRepairBuffer.clear()
+          channel.messageCache.clear()
+          channel.messageSenders.clear()
         rm.channels.clear()
     except Exception:
       error "Error during cleanup", error = getCurrentExceptionMsg()
@@ -70,21 +74,76 @@ proc toCausalHistory*(messageIds: seq[SdsMessageID]): seq[HistoryEntry] =
 proc getMessageIds*(causalHistory: seq[HistoryEntry]): seq[SdsMessageID] =
   return causalHistory.mapIt(it.messageId)
 
+## SDS-R: Repair computation functions
+
+proc computeTReq*(
+    participantId: SdsParticipantID,
+    messageId: SdsMessageID,
+    tMin: Duration,
+    tMax: Duration,
+): Duration =
+  ## Computes the repair request backoff duration per SDS-R spec:
+  ## T_req = hash(participant_id, message_id) % (T_max - T_min) + T_min
+  let h = abs(hash(participantId.string & messageId))
+  let rangeMs = tMax.inMilliseconds - tMin.inMilliseconds
+  if rangeMs <= 0:
+    return tMin
+  let offsetMs = h mod rangeMs
+  initDuration(milliseconds = tMin.inMilliseconds + offsetMs)
+
+proc computeTResp*(
+    participantId: SdsParticipantID,
+    senderId: SdsParticipantID,
+    messageId: SdsMessageID,
+    tMax: Duration,
+): Duration =
+  ## Computes the repair response backoff duration per SDS-R spec:
+  ## distance = hash(participant_id) XOR hash(sender_id)
+  ## T_resp = distance * hash(message_id) % T_max
+  ## Original sender has distance=0, so T_resp=0 (responds immediately).
+  let distance = abs(hash(participantId) xor hash(senderId))
+  let msgHash = abs(hash(messageId))
+  let tMaxMs = tMax.inMilliseconds
+  if tMaxMs <= 0 or distance == 0:
+    return initDuration(milliseconds = 0)
+  # Use uint64 to avoid overflow on multiplication
+  let d = uint64(distance mod tMaxMs)
+  let m = uint64(msgHash mod tMaxMs)
+  let offsetMs = int64((d * m) mod uint64(tMaxMs))
+  initDuration(milliseconds = offsetMs)
+
+proc isInResponseGroup*(
+    participantId: SdsParticipantID,
+    senderId: SdsParticipantID,
+    messageId: SdsMessageID,
+    numResponseGroups: int,
+): bool =
+  ## Determines if this participant is in the response group for a given message per SDS-R spec:
+  ## hash(participant_id, message_id) % num_groups == hash(sender_id, message_id) % num_groups
+  if numResponseGroups <= 1:
+    return true  # All participants in the same group
+  let myGroup = abs(hash(participantId.string & messageId)) mod numResponseGroups
+  let senderGroup = abs(hash(senderId.string & messageId)) mod numResponseGroups
+  myGroup == senderGroup
+
 proc getRecentHistoryEntries*(
     rm: ReliabilityManager, n: int, channelId: SdsChannelID
 ): seq[HistoryEntry] =
+  ## Get recent history entries for sending in causal history.
+  ## Populates retrieval hints and senderId (SDS-R) for each entry.
   try:
     if channelId in rm.channels:
       let channel = rm.channels[channelId]
       let recentMessageIds = channel.messageHistory[max(0, channel.messageHistory.len - n) .. ^1]
-      if rm.onRetrievalHint.isNil():
-        return toCausalHistory(recentMessageIds)
-      else:
-        var entries: seq[HistoryEntry] = @[]
-        for msgId in recentMessageIds:
-          let hint = rm.onRetrievalHint(msgId)
-          entries.add(newHistoryEntry(msgId, hint))
-        return entries
+      var entries: seq[HistoryEntry] = @[]
+      for msgId in recentMessageIds:
+        var entry = HistoryEntry(messageId: msgId)
+        if not rm.onRetrievalHint.isNil():
+          entry.retrievalHint = rm.onRetrievalHint(msgId)
+        if msgId in channel.messageSenders:
+          entry.senderId = channel.messageSenders[msgId]
+        entries.add(entry)
+      return entries
     else:
       return @[]
   except Exception:
@@ -188,6 +247,10 @@ proc removeChannel*(
         channel.outgoingBuffer.setLen(0)
         channel.incomingBuffer.clear()
         channel.messageHistory.setLen(0)
+        channel.outgoingRepairBuffer.clear()
+        channel.incomingRepairBuffer.clear()
+        channel.messageCache.clear()
+        channel.messageSenders.clear()
         rm.channels.del(channelId)
       return ok()
     except Exception:
