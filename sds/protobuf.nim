@@ -11,7 +11,7 @@ proc encodeHistoryEntry*(entry: HistoryEntry): ProtoBuffer =
   if entry.retrievalHint.len > 0:
     entryPb.write(2, entry.retrievalHint)
   if entry.senderId.len > 0:
-    entryPb.write(3, entry.senderId)
+    entryPb.write(3, entry.senderId.string)
   entryPb.finish()
   entryPb
 
@@ -20,7 +20,9 @@ proc decodeHistoryEntry*(entryPb: ProtoBuffer): ProtobufResult[HistoryEntry] =
   if not ?entryPb.getField(1, entry.messageId):
     return err(ProtobufError.missingRequiredField("HistoryEntry.messageId"))
   discard entryPb.getField(2, entry.retrievalHint)
-  discard entryPb.getField(3, entry.senderId)
+  var senderIdStr: string
+  if entryPb.getField(3, senderIdStr).valueOr(false):
+    entry.senderId = senderIdStr.SdsParticipantID
   ok(entry)
 
 proc encode*(msg: SdsMessage): ProtoBuffer =
@@ -38,7 +40,7 @@ proc encode*(msg: SdsMessage): ProtoBuffer =
   pb.write(6, msg.bloomFilter)
 
   if msg.senderId.len > 0:
-    pb.write(7, msg.senderId)
+    pb.write(7, msg.senderId.string)
 
   for entry in msg.repairRequest:
     let entryPb = encodeHistoryEntry(entry)
@@ -85,7 +87,9 @@ proc decode*(T: type SdsMessage, buffer: seq[byte]): ProtobufResult[T] =
     msg.bloomFilter = @[] # Empty if not present
 
   # SDS-R: decode senderId (field 7, optional)
-  discard pb.getField(7, msg.senderId)
+  var msgSenderIdStr: string
+  if pb.getField(7, msgSenderIdStr).valueOr(false):
+    msg.senderId = msgSenderIdStr.SdsParticipantID
 
   # SDS-R: decode repair request (field 13, optional)
   var repairBuffers: seq[seq[byte]]

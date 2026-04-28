@@ -23,7 +23,7 @@ type ReliabilityManager* = ref object
 proc new*(
     T: type ReliabilityManager,
     config: ReliabilityConfig,
-    participantId: SdsParticipantID = "",
+    participantId: SdsParticipantID = "".SdsParticipantID,
 ): T =
   let rm = T(
     channels: initTable[SdsChannelID, ChannelContext](),

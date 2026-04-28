@@ -1,6 +1,10 @@
 import unittest, results, chronos, std/[times, options, tables]
 import sds
 
+# Test-only convenience: implicit string → SdsParticipantID so test fixtures
+# can use string literals. Production code retains the distinct-type safety.
+converter toParticipantID(s: string): SdsParticipantID = s.SdsParticipantID
+
 const testChannel = "testChannel"
 
 # Core functionality tests
@@ -895,8 +899,8 @@ suite "SDS-R: Repair Buffer Management":
     # Manually add an expired repair entry
     let channel = rm.channels[testChannel]
     channel.outgoingRepairBuffer["missing-msg"] = OutgoingRepairEntry(
-      entry: HistoryEntry(messageId: "missing-msg", senderId: "orig-sender"),
-      tReq: getTime() - initDuration(seconds = 10),  # Already expired
+      outHistEntry: HistoryEntry(messageId: "missing-msg", senderId: "orig-sender"),
+      minTimeRepairReq: getTime() - initDuration(seconds = 10),  # Already expired
     )
 
     # Send a message — should pick up the expired repair request
@@ -1177,13 +1181,13 @@ suite "SDS-R: Lifecycle and State":
     let channel = rm.channels[testChannel]
 
     channel.outgoingRepairBuffer["a"] = OutgoingRepairEntry(
-      entry: HistoryEntry(messageId: "a", senderId: "x"),
-      tReq: getTime(),
+      outHistEntry: HistoryEntry(messageId: "a", senderId: "x"),
+      minTimeRepairReq: getTime(),
     )
     channel.incomingRepairBuffer["b"] = IncomingRepairEntry(
-      entry: HistoryEntry(messageId: "b", senderId: "y"),
+      inHistEntry: HistoryEntry(messageId: "b", senderId: "y"),
       cachedMessage: @[byte(1)],
-      tResp: getTime(),
+      minTimeRepairResp: getTime(),
     )
     channel.messageCache["c"] = @[byte(2)]
     channel.messageSenders["c"] = "someone"
@@ -1239,9 +1243,9 @@ suite "SDS-R: Lifecycle and State":
     # Carol already has M1 in history and has a pending incomingRepairBuffer entry
     channel.messageHistory.add("m1")
     channel.incomingRepairBuffer["m1"] = IncomingRepairEntry(
-      entry: HistoryEntry(messageId: "m1", senderId: "alice"),
+      inHistEntry: HistoryEntry(messageId: "m1", senderId: "alice"),
       cachedMessage: @[byte(1)],
-      tResp: getTime() + initDuration(seconds = 10),
+      minTimeRepairResp: getTime() + initDuration(seconds = 10),
     )
 
     # A rebroadcast of M1 arrives
@@ -1284,14 +1288,14 @@ suite "SDS-R: Repair Sweep":
 
     let channel = rm.channels[testChannel]
     channel.incomingRepairBuffer["m-ready"] = IncomingRepairEntry(
-      entry: HistoryEntry(messageId: "m-ready", senderId: "alice"),
+      inHistEntry: HistoryEntry(messageId: "m-ready", senderId: "alice"),
       cachedMessage: @[byte(1), 2, 3],
-      tResp: getTime() - initDuration(seconds = 1),  # expired
+      minTimeRepairResp: getTime() - initDuration(seconds = 1),  # expired
     )
     channel.incomingRepairBuffer["m-not-ready"] = IncomingRepairEntry(
-      entry: HistoryEntry(messageId: "m-not-ready", senderId: "alice"),
+      inHistEntry: HistoryEntry(messageId: "m-not-ready", senderId: "alice"),
       cachedMessage: @[byte(9), 9, 9],
-      tResp: getTime() + initDuration(minutes = 10),  # far future
+      minTimeRepairResp: getTime() + initDuration(minutes = 10),  # far future
     )
 
     rm.runRepairSweep()
@@ -1312,12 +1316,12 @@ suite "SDS-R: Repair Sweep":
     let channel = rm.channels[testChannel]
     let tMax = rm.config.repairTMax
     channel.outgoingRepairBuffer["m-stale"] = OutgoingRepairEntry(
-      entry: HistoryEntry(messageId: "m-stale", senderId: "alice"),
-      tReq: getTime() - (tMax + tMax),  # now - 2*T_max, past drop window
+      outHistEntry: HistoryEntry(messageId: "m-stale", senderId: "alice"),
+      minTimeRepairReq: getTime() - (tMax + tMax),  # now - 2*T_max, past drop window
     )
     channel.outgoingRepairBuffer["m-fresh"] = OutgoingRepairEntry(
-      entry: HistoryEntry(messageId: "m-fresh", senderId: "alice"),
-      tReq: getTime(),
+      outHistEntry: HistoryEntry(messageId: "m-fresh", senderId: "alice"),
+      minTimeRepairReq: getTime(),
     )
 
     rm.runRepairSweep()
@@ -1411,20 +1415,20 @@ proc broadcast(
 proc forceOutgoingExpired(
     rm: ReliabilityManager, messageId: SdsMessageID
 ) =
-  ## Push a specific outgoingRepairBuffer entry's tReq into the past so the
+  ## Push a specific outgoingRepairBuffer entry's minTimeRepairReq into the past so the
   ## next wrapOutgoingMessage will pick it up.
   let channel = rm.channels[testChannel]
   if messageId in channel.outgoingRepairBuffer:
-    channel.outgoingRepairBuffer[messageId].tReq =
+    channel.outgoingRepairBuffer[messageId].minTimeRepairReq =
       getTime() - initDuration(seconds = 1)
 
 proc forceIncomingExpired(
     rm: ReliabilityManager, messageId: SdsMessageID
 ) =
-  ## Push an incomingRepairBuffer entry's tResp into the past so runRepairSweep fires it.
+  ## Push an incomingRepairBuffer entry's minTimeRepairResp into the past so runRepairSweep fires it.
   let channel = rm.channels[testChannel]
   if messageId in channel.incomingRepairBuffer:
-    channel.incomingRepairBuffer[messageId].tResp =
+    channel.incomingRepairBuffer[messageId].minTimeRepairResp =
       getTime() - initDuration(seconds = 1)
 
 suite "SDS-R: Multi-Participant Integration":

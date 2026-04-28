@@ -84,7 +84,7 @@ proc computeTReq*(
 ): Duration =
   ## Computes the repair request backoff duration per SDS-R spec:
   ## T_req = hash(participant_id, message_id) % (T_max - T_min) + T_min
-  let h = abs(hash(participantId & messageId))
+  let h = abs(hash(participantId.string & messageId))
   let rangeMs = tMax.inMilliseconds - tMin.inMilliseconds
   if rangeMs <= 0:
     return tMin
@@ -122,8 +122,8 @@ proc isInResponseGroup*(
   ## hash(participant_id, message_id) % num_groups == hash(sender_id, message_id) % num_groups
   if numResponseGroups <= 1:
     return true  # All participants in the same group
-  let myGroup = abs(hash(participantId & messageId)) mod numResponseGroups
-  let senderGroup = abs(hash(senderId & messageId)) mod numResponseGroups
+  let myGroup = abs(hash(participantId.string & messageId)) mod numResponseGroups
+  let senderGroup = abs(hash(senderId.string & messageId)) mod numResponseGroups
   myGroup == senderGroup
 
 proc getRecentHistoryEntries*(

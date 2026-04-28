@@ -6,7 +6,7 @@ export types, protobuf, sds_utils, rolling_bloom_filter
 
 proc newReliabilityManager*(
     config: ReliabilityConfig = defaultConfig(),
-    participantId: SdsParticipantID = "",
+    participantId: SdsParticipantID = "".SdsParticipantID,
 ): Result[ReliabilityManager, ReliabilityError] =
   ## Creates a new multi-channel ReliabilityManager.
   try:
@@ -94,8 +94,8 @@ proc wrapOutgoingMessage*(
       let now = getTime()
       var expiredKeys: seq[SdsMessageID] = @[]
       for msgId, repairEntry in channel.outgoingRepairBuffer:
-        if now >= repairEntry.tReq and repairReqs.len < rm.config.maxRepairRequests:
-          repairReqs.add(repairEntry.entry)
+        if now >= repairEntry.minTimeRepairReq and repairReqs.len < rm.config.maxRepairRequests:
+          repairReqs.add(repairEntry.outHistEntry)
           expiredKeys.add(msgId)
       for key in expiredKeys:
         channel.outgoingRepairBuffer.del(key)
@@ -225,9 +225,9 @@ proc unwrapReceivedMessage*(
             repairEntry.messageId, rm.config.repairTMax
           )
           channel.incomingRepairBuffer[repairEntry.messageId] = IncomingRepairEntry(
-            entry: repairEntry,
+            inHistEntry: repairEntry,
             cachedMessage: channel.messageCache[repairEntry.messageId],
-            tResp: now + tResp,
+            minTimeRepairResp: now + tResp,
           )
 
     var missingDeps = rm.checkDependencies(msg.causalHistory, channelId)
@@ -268,8 +268,8 @@ proc unwrapReceivedMessage*(
               rm.config.repairTMin, rm.config.repairTMax
             )
             channel.outgoingRepairBuffer[dep.messageId] = OutgoingRepairEntry(
-              entry: dep,
-              tReq: now + tReq,
+              outHistEntry: dep,
+              minTimeRepairReq: now + tReq,
             )
 
     return ok((msg.content, missingDeps, channelId))
@@ -392,7 +392,7 @@ proc runRepairSweep*(rm: ReliabilityManager) {.gcsafe, raises: [].} =
         # Check incoming repair buffer for expired T_resp (time to rebroadcast)
         var toRebroadcast: seq[SdsMessageID] = @[]
         for msgId, entry in channel.incomingRepairBuffer:
-          if now >= entry.tResp:
+          if now >= entry.minTimeRepairResp:
             toRebroadcast.add(msgId)
 
         for msgId in toRebroadcast:
@@ -405,7 +405,7 @@ proc runRepairSweep*(rm: ReliabilityManager) {.gcsafe, raises: [].} =
         var toRemove: seq[SdsMessageID] = @[]
         let tMaxDuration = rm.config.repairTMax
         for msgId, entry in channel.outgoingRepairBuffer:
-          if now - entry.tReq > tMaxDuration:
+          if now - entry.minTimeRepairReq > tMaxDuration:
             toRemove.add(msgId)
         for msgId in toRemove:
           channel.outgoingRepairBuffer.del(msgId)

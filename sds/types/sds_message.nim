@@ -21,7 +21,7 @@ proc init*(
     channelId: SdsChannelID,
     content: seq[byte],
     bloomFilter: seq[byte],
-    senderId: SdsParticipantID = "",
+    senderId: SdsParticipantID = "".SdsParticipantID,
     repairRequest: seq[HistoryEntry] = @[],
 ): T =
   return T(
