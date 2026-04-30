@@ -2,7 +2,7 @@ import ./sds_message_id
 import ./history_entry
 export sds_message_id, history_entry
 
-type SdsMessage* = object
+type SdsMessage* {.requiresInit.} = object
   messageId*: SdsMessageID
   lamportTimestamp*: int64
   causalHistory*: seq[HistoryEntry]
