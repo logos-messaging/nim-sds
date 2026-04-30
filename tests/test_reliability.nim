@@ -1148,6 +1148,43 @@ suite "SDS-R: Repair Buffer Management":
       # Should be removed from buffer after attaching
       "missing-msg" notin channel.outgoingRepairBuffer
 
+  test "expired repair requests attach the most-overdue first when capped":
+    # Per spec (sds-r-send-message, RECOMMENDED): when more entries are
+    # eligible than maxRepairRequests, attach the ones with the smallest
+    # minTimeRepairReq — i.e. the most overdue.
+    rm.setCallbacks(
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
+      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} = discard,
+    )
+    let channel = rm.channels[testChannel]
+    let now = getTime()
+
+    # Five eligible entries with strictly ordered minTimeRepairReq (most-overdue first).
+    # All are expired; the cap is the default 3, so two should be left behind.
+    let expected = ["oldest", "second", "third", "fourth", "newest"]
+    for i, id in expected:
+      channel.outgoingRepairBuffer[id] = OutgoingRepairEntry(
+        outHistEntry: HistoryEntry(messageId: id, senderId: "sender"),
+        minTimeRepairReq: now - initDuration(seconds = 50 - i * 10),
+      )
+
+    let wrapped = rm.wrapOutgoingMessage(@[byte(1)], "outbound", testChannel)
+    check wrapped.isOk()
+
+    let attached = deserializeMessage(wrapped.get()).get().repairRequest
+    check:
+      attached.len == rm.config.maxRepairRequests
+      attached[0].messageId == "oldest"
+      attached[1].messageId == "second"
+      attached[2].messageId == "third"
+      # Two least-overdue remain in the buffer for next time.
+      "fourth" in channel.outgoingRepairBuffer
+      "newest" in channel.outgoingRepairBuffer
+      "oldest" notin channel.outgoingRepairBuffer
+      "second" notin channel.outgoingRepairBuffer
+      "third" notin channel.outgoingRepairBuffer
+
   test "incoming repair request adds to incoming repair buffer when eligible":
     rm.setCallbacks(
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,

@@ -1,4 +1,4 @@
-import std/[times, locks, tables, sets, options]
+import std/[algorithm, times, locks, tables, sets, options]
 import chronos, results, chronicles
 import sds/[types, protobuf, sds_utils, rolling_bloom_filter]
 
@@ -89,14 +89,23 @@ proc wrapOutgoingMessage*(
         error "Failed to serialize bloom filter", channelId = channelId
         return err(ReliabilityError.reSerializationError)
 
-      # SDS-R: collect eligible expired repair requests to attach
+      # SDS-R: collect eligible expired repair requests to attach. Per
+      # spec (sds-r-send-message, RECOMMENDED), prioritise the entries with
+      # the smallest minTimeRepairReq — they are the most overdue and the
+      # ones the network most needs us to ask about.
       var repairReqs: seq[HistoryEntry] = @[]
       let now = getTime()
       var expiredKeys: seq[SdsMessageID] = @[]
+      var eligible: seq[(SdsMessageID, OutgoingRepairEntry)] = @[]
       for msgId, repairEntry in channel.outgoingRepairBuffer:
-        if now >= repairEntry.minTimeRepairReq and repairReqs.len < rm.config.maxRepairRequests:
-          repairReqs.add(repairEntry.outHistEntry)
-          expiredKeys.add(msgId)
+        if now >= repairEntry.minTimeRepairReq:
+          eligible.add((msgId, repairEntry))
+      eligible.sort do(a, b: (SdsMessageID, OutgoingRepairEntry)) -> int:
+        cmp(a[1].minTimeRepairReq, b[1].minTimeRepairReq)
+      let take = min(eligible.len, rm.config.maxRepairRequests)
+      for i in 0 ..< take:
+        repairReqs.add(eligible[i][1].outHistEntry)
+        expiredKeys.add(eligible[i][0])
       for key in expiredKeys:
         channel.outgoingRepairBuffer.del(key)
 
