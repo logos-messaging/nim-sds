@@ -116,18 +116,12 @@ proc wrapOutgoingMessage*(
       )
 
       channel.bloomFilter.add(msg.messageId)
-      rm.addToHistory(msg.messageId, channelId)
+      # The full SdsMessage carries senderId and content, so a single
+      # addToHistory replaces the old triple-write to messageHistory,
+      # messageCache, and messageSenders.
+      rm.addToHistory(msg, channelId)
 
-      # SDS-R: record sender for future causal-history entries
-      if rm.participantId.len > 0:
-        channel.messageSenders[msg.messageId] = rm.participantId
-
-      let serialized = serializeMessage(msg)
-      if serialized.isOk():
-        # SDS-R: cache serialized bytes so we can serve our own message on repair
-        if channel.messageCache.len < rm.config.maxMessageHistory:
-          channel.messageCache[msg.messageId] = serialized.get()
-      return serialized
+      return serializeMessage(msg)
     except Exception:
       error "Failed to wrap message",
         channelId = channelId, msg = getCurrentExceptionMsg()
@@ -156,7 +150,7 @@ proc processIncomingBuffer(rm: ReliabilityManager, channelId: SdsChannelID) {.gc
         continue
 
       if msgId in channel.incomingBuffer:
-        rm.addToHistory(msgId, channelId)
+        rm.addToHistory(channel.incomingBuffer[msgId].message, channelId)
         if not rm.onMessageReady.isNil():
           rm.onMessageReady(msgId, channelId)
         processed.incl(msgId)
@@ -200,35 +194,31 @@ proc unwrapReceivedMessage*(
     rm.updateLamportTimestamp(msg.lamportTimestamp, channelId)
     rm.reviewAckStatus(msg)
 
-    # SDS-R: cache the raw message for potential repair responses
-    if channel.messageCache.len < rm.config.maxMessageHistory:
-      channel.messageCache[msg.messageId] = message
-
-    # SDS-R: record sender so our future causal-history entries carry it
-    if msg.senderId.len > 0:
-      channel.messageSenders[msg.messageId] = msg.senderId
-
-    # SDS-R: process incoming repair requests from this message
+    # SDS-R: process incoming repair requests from this message. We can only
+    # answer for messages we have actually delivered (i.e. that live in
+    # messageHistory) — buffered-but-undelivered messages are not in a state
+    # to confidently rebroadcast.
     let now = getTime()
     for repairEntry in msg.repairRequest:
       # Remove from our own outgoing repair buffer (someone else is also requesting)
       channel.outgoingRepairBuffer.del(repairEntry.messageId)
-      # Check if we can respond to this repair request
-      if repairEntry.messageId in channel.messageCache and
+      if repairEntry.messageId in channel.messageHistory and
          rm.participantId.len > 0 and repairEntry.senderId.len > 0:
         if isInResponseGroup(
           rm.participantId, repairEntry.senderId,
           repairEntry.messageId, rm.config.numResponseGroups
         ):
-          let tResp = computeTResp(
-            rm.participantId, repairEntry.senderId,
-            repairEntry.messageId, rm.config.repairTMax
-          )
-          channel.incomingRepairBuffer[repairEntry.messageId] = IncomingRepairEntry(
-            inHistEntry: repairEntry,
-            cachedMessage: channel.messageCache[repairEntry.messageId],
-            minTimeRepairResp: now + tResp,
-          )
+          let serialized = serializeMessage(channel.messageHistory[repairEntry.messageId])
+          if serialized.isOk():
+            let tResp = computeTResp(
+              rm.participantId, repairEntry.senderId,
+              repairEntry.messageId, rm.config.repairTMax
+            )
+            channel.incomingRepairBuffer[repairEntry.messageId] = IncomingRepairEntry(
+              inHistEntry: repairEntry,
+              cachedMessage: serialized.get(),
+              minTimeRepairResp: now + tResp,
+            )
 
     var missingDeps = rm.checkDependencies(msg.causalHistory, channelId)
 
@@ -242,7 +232,7 @@ proc unwrapReceivedMessage*(
         channel.incomingBuffer[msg.messageId] =
           IncomingMessage.init(message = msg, missingDeps = initHashSet[SdsMessageID]())
       else:
-        rm.addToHistory(msg.messageId, channelId)
+        rm.addToHistory(msg, channelId)
         # Unblock any buffered messages that were waiting on this one.
         for pendingId, entry in channel.incomingBuffer:
           if msg.messageId in entry.missingDeps:
@@ -435,13 +425,11 @@ proc resetReliabilityManager*(rm: ReliabilityManager): Result[void, ReliabilityE
     try:
       for channelId, channel in rm.channels:
         channel.lamportTimestamp = 0
-        channel.messageHistory.setLen(0)
+        channel.messageHistory.clear()
         channel.outgoingBuffer.setLen(0)
         channel.incomingBuffer.clear()
         channel.outgoingRepairBuffer.clear()
         channel.incomingRepairBuffer.clear()
-        channel.messageCache.clear()
-        channel.messageSenders.clear()
         channel.bloomFilter =
           RollingBloomFilter.init(rm.config.bloomFilterCapacity, rm.config.bloomFilterErrorRate)
       rm.channels.clear()

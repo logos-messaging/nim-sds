@@ -21,11 +21,9 @@ proc cleanup*(rm: ReliabilityManager) {.raises: [].} =
         for channelId, channel in rm.channels:
           channel.outgoingBuffer.setLen(0)
           channel.incomingBuffer.clear()
-          channel.messageHistory.setLen(0)
+          channel.messageHistory.clear()
           channel.outgoingRepairBuffer.clear()
           channel.incomingRepairBuffer.clear()
-          channel.messageCache.clear()
-          channel.messageSenders.clear()
         rm.channels.clear()
     except Exception:
       error "Error during cleanup", error = getCurrentExceptionMsg()
@@ -42,17 +40,25 @@ proc cleanBloomFilter*(
         error = getCurrentExceptionMsg(), channelId = channelId
 
 proc addToHistory*(
-    rm: ReliabilityManager, msgId: SdsMessageID, channelId: SdsChannelID
+    rm: ReliabilityManager, msg: SdsMessage, channelId: SdsChannelID
 ) {.gcsafe, raises: [].} =
+  ## Inserts a delivered message into the channel's history map and evicts the
+  ## eldest entries when the bound is exceeded. The full SdsMessage is kept so
+  ## senderId is available for downstream causal-history population and the
+  ## bytes can be re-serialized on demand to answer SDS-R repair requests.
   try:
     if channelId in rm.channels:
       let channel = rm.channels[channelId]
-      channel.messageHistory.add(msgId)
-      if channel.messageHistory.len > rm.config.maxMessageHistory:
-        channel.messageHistory.delete(0)
+      channel.messageHistory[msg.messageId] = msg
+      while channel.messageHistory.len > rm.config.maxMessageHistory:
+        var firstKey: SdsMessageID
+        for k in channel.messageHistory.keys:
+          firstKey = k
+          break
+        channel.messageHistory.del(firstKey)
   except Exception:
     error "Failed to add to history",
-      channelId = channelId, msgId = msgId, error = getCurrentExceptionMsg()
+      channelId = channelId, msgId = msg.messageId, error = getCurrentExceptionMsg()
 
 proc updateLamportTimestamp*(
     rm: ReliabilityManager, msgTs: int64, channelId: SdsChannelID
@@ -134,14 +140,17 @@ proc getRecentHistoryEntries*(
   try:
     if channelId in rm.channels:
       let channel = rm.channels[channelId]
-      let recentMessageIds = channel.messageHistory[max(0, channel.messageHistory.len - n) .. ^1]
+      var orderedIds: seq[SdsMessageID] = @[]
+      for msgId in channel.messageHistory.keys:
+        orderedIds.add(msgId)
+      let recentMessageIds =
+        orderedIds[max(0, orderedIds.len - n) .. ^1]
       var entries: seq[HistoryEntry] = @[]
       for msgId in recentMessageIds:
         var entry = HistoryEntry(messageId: msgId)
         if not rm.onRetrievalHint.isNil():
           entry.retrievalHint = rm.onRetrievalHint(msgId)
-        if msgId in channel.messageSenders:
-          entry.senderId = channel.messageSenders[msgId]
+        entry.senderId = channel.messageHistory[msgId].senderId
         entries.add(entry)
       return entries
     else:
@@ -175,7 +184,10 @@ proc getMessageHistory*(
   withLock rm.lock:
     try:
       if channelId in rm.channels:
-        return rm.channels[channelId].messageHistory
+        var ids: seq[SdsMessageID] = @[]
+        for msgId in rm.channels[channelId].messageHistory.keys:
+          ids.add(msgId)
+        return ids
       else:
         return @[]
     except Exception:
@@ -246,11 +258,9 @@ proc removeChannel*(
         let channel = rm.channels[channelId]
         channel.outgoingBuffer.setLen(0)
         channel.incomingBuffer.clear()
-        channel.messageHistory.setLen(0)
+        channel.messageHistory.clear()
         channel.outgoingRepairBuffer.clear()
         channel.incomingRepairBuffer.clear()
-        channel.messageCache.clear()
-        channel.messageSenders.clear()
         rm.channels.del(channelId)
       return ok()
     except Exception:

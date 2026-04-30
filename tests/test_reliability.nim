@@ -1157,7 +1157,7 @@ suite "SDS-R: Repair Buffer Management":
 
     let channel = rm.channels[testChannel]
 
-    # First, cache a message so we can respond to a repair request for it
+    # First, seed delivered history so we can respond to a repair request for it
     let cachedMsg = SdsMessage(
       messageId: "cached-msg",
       lamportTimestamp: 1,
@@ -1166,8 +1166,7 @@ suite "SDS-R: Repair Buffer Management":
       content: @[byte(99)],
       bloomFilter: @[],
     )
-    let cachedBytes = serializeMessage(cachedMsg).get()
-    channel.messageCache["cached-msg"] = cachedBytes
+    channel.messageHistory["cached-msg"] = cachedMsg
 
     # Receive a message with a repair request for "cached-msg"
     let msgWithRepair = SdsMessage(
@@ -1361,7 +1360,14 @@ suite "SDS-R: Lifecycle and State":
     defer: rm.cleanup()
     check rm.ensureChannel(testChannel).isOk()
     let channel = rm.channels[testChannel]
-    channel.messageCache["m-wanted"] = @[byte(99), 99, 99]
+    channel.messageHistory["m-wanted"] = SdsMessage(
+      messageId: "m-wanted",
+      lamportTimestamp: 1,
+      causalHistory: @[],
+      channelId: testChannel,
+      content: @[byte(99), 99, 99],
+      bloomFilter: @[],
+    )
 
     rm.setCallbacks(
       proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
@@ -1381,8 +1387,11 @@ suite "SDS-R: Lifecycle and State":
     discard rm.unwrapReceivedMessage(serializeMessage(msg).get())
     check "m-wanted" notin channel.incomingRepairBuffer
 
-  test "wrapOutgoingMessage caches bytes and records sender":
+  test "wrapOutgoingMessage records the message in history with our senderId":
     # Proves Bug 1 is fixed — the original sender can serve her own message.
+    # In the consolidated history model, the SdsMessage itself carries senderId
+    # and can be re-serialized on demand for repair, so a single membership
+    # check + senderId read covers both halves of the original assertion.
     let rm = newReliabilityManager(participantId = "alice").get()
     defer: rm.cleanup()
     check rm.ensureChannel(testChannel).isOk()
@@ -1390,10 +1399,9 @@ suite "SDS-R: Lifecycle and State":
     discard rm.wrapOutgoingMessage(@[byte(1), 2, 3], "m1", testChannel)
     let channel = rm.channels[testChannel]
     check:
-      "m1" in channel.messageCache
-      channel.messageCache["m1"].len > 0
-      "m1" in channel.messageSenders
-      channel.messageSenders["m1"] == "alice"
+      "m1" in channel.messageHistory
+      channel.messageHistory["m1"].senderId == "alice"
+      channel.messageHistory["m1"].content == @[byte(1), 2, 3]
 
   test "getRecentHistoryEntries carries senderId for own messages":
     let rm = newReliabilityManager(participantId = "alice").get()
@@ -1423,8 +1431,15 @@ suite "SDS-R: Lifecycle and State":
       cachedMessage: @[byte(1)],
       minTimeRepairResp: getTime(),
     )
-    channel.messageCache["c"] = @[byte(2)]
-    channel.messageSenders["c"] = "someone"
+    channel.messageHistory["c"] = SdsMessage(
+      messageId: "c",
+      lamportTimestamp: 1,
+      causalHistory: @[],
+      channelId: testChannel,
+      content: @[byte(2)],
+      bloomFilter: @[],
+      senderId: "someone",
+    )
 
     check rm.resetReliabilityManager().isOk()
     check rm.ensureChannel(testChannel).isOk()
@@ -1432,8 +1447,7 @@ suite "SDS-R: Lifecycle and State":
     check:
       ch2.outgoingRepairBuffer.len == 0
       ch2.incomingRepairBuffer.len == 0
-      ch2.messageCache.len == 0
-      ch2.messageSenders.len == 0
+      ch2.messageHistory.len == 0
 
   test "SDS-R state is isolated per channel":
     let rm = newReliabilityManager(participantId = "alice").get()
@@ -1475,7 +1489,14 @@ suite "SDS-R: Lifecycle and State":
     )
 
     # Carol already has M1 in history and has a pending incomingRepairBuffer entry
-    channel.messageHistory.add("m1")
+    channel.messageHistory["m1"] = SdsMessage(
+      messageId: "m1",
+      lamportTimestamp: 1,
+      causalHistory: @[],
+      channelId: testChannel,
+      content: @[byte(1)],
+      bloomFilter: @[],
+    )
     channel.incomingRepairBuffer["m1"] = IncomingRepairEntry(
       inHistEntry: HistoryEntry(messageId: "m1", senderId: "alice"),
       cachedMessage: @[byte(1)],
@@ -1799,7 +1820,7 @@ suite "SDS-R: Multi-Participant Integration":
     let bob = bus.addPeer("bob", cfg)
     let carol = bus.addPeer("carol", cfg)
 
-    # Both Bob and Carol receive the original M1 (so both have it in messageCache).
+    # Both Bob and Carol receive the original M1 (so both have it in messageHistory).
     bus.broadcast("alice", @[byte(1)], chosenMsg)
 
     # Now Dave arrives: build a fake requester message manually so its repair_request
