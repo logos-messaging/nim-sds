@@ -9,6 +9,7 @@ import sds/types/reliability_error
 import sds/types/callbacks
 import sds/types/app_callbacks
 import sds/types/reliability_config
+import sds/types/repair_entry
 import sds/types/channel_context
 import sds/types/reliability_manager
 import sds/types/protobuf_error
@@ -25,6 +26,7 @@ export
   callbacks,
   app_callbacks,
   reliability_config,
+  repair_entry,
   channel_context,
   reliability_manager,
   protobuf_error
