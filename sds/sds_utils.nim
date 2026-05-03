@@ -14,7 +14,28 @@ export
 proc defaultConfig*(): ReliabilityConfig =
   return ReliabilityConfig.init()
 
+proc dropChannelFromPersistence*(
+    rm: ReliabilityManager, channelId: SdsChannelID, channel: ChannelContext
+) {.gcsafe, raises: [].} =
+  ## Fires per-entry remove calls for every buffered entry in the channel.
+  ## Called by cleanup / removeChannel / resetReliabilityManager before they
+  ## wipe in-memory state, so on-disk state stays consistent.
+  for unack in channel.outgoingBuffer:
+    rm.persistence.removeOutgoing(channelId, unack.message.messageId)
+  for msgId in channel.incomingBuffer.keys:
+    rm.persistence.removeIncoming(channelId, msgId)
+  for msgId in channel.messageHistory.keys:
+    rm.persistence.removeLogEntry(channelId, msgId)
+  for msgId in channel.outgoingRepairBuffer.keys:
+    rm.persistence.removeOutgoingRepair(channelId, msgId)
+  for msgId in channel.incomingRepairBuffer.keys:
+    rm.persistence.removeIncomingRepair(channelId, msgId)
+
 proc cleanup*(rm: ReliabilityManager) {.raises: [].} =
+  ## Releases in-memory state. Does NOT wipe persistence — the manager may be
+  ## reconstructed against the same backend after cleanup, so disk state must
+  ## survive. For deliberate disk wipe, use `removeChannel` or
+  ## `resetReliabilityManager`.
   if not rm.isNil():
     try:
       withLock rm.lock:
@@ -50,12 +71,14 @@ proc addToHistory*(
     if channelId in rm.channels:
       let channel = rm.channels[channelId]
       channel.messageHistory[msg.messageId] = msg
+      rm.persistence.appendLogEntry(channelId, msg)
       while channel.messageHistory.len > rm.config.maxMessageHistory:
         var firstKey: SdsMessageID
         for k in channel.messageHistory.keys:
           firstKey = k
           break
         channel.messageHistory.del(firstKey)
+        rm.persistence.removeLogEntry(channelId, firstKey)
   except Exception:
     error "Failed to add to history",
       channelId = channelId, msgId = msg.messageId, error = getCurrentExceptionMsg()
@@ -67,6 +90,7 @@ proc updateLamportTimestamp*(
     if channelId in rm.channels:
       let channel = rm.channels[channelId]
       channel.lamportTimestamp = max(msgTs, channel.lamportTimestamp) + 1
+      rm.persistence.saveLamport(channelId, channel.lamportTimestamp)
   except Exception:
     error "Failed to update lamport timestamp",
       channelId = channelId, msgTs = msgTs, error = getCurrentExceptionMsg()
@@ -150,6 +174,8 @@ proc getRecentHistoryEntries*(
         var entry = HistoryEntry(messageId: msgId)
         if not rm.onRetrievalHint.isNil():
           entry.retrievalHint = rm.onRetrievalHint(msgId)
+          if entry.retrievalHint.len > 0:
+            rm.persistence.setRetrievalHint(msgId, entry.retrievalHint)
         entry.senderId = channel.messageHistory[msgId].senderId
         entries.add(entry)
       return entries
@@ -226,11 +252,29 @@ proc getIncomingBuffer*(
 proc getOrCreateChannel*(
     rm: ReliabilityManager, channelId: SdsChannelID
 ): ChannelContext =
+  ## Returns the channel context, creating and bootstrapping it from the
+  ## persistence backend if it does not yet exist in memory. The bloom filter
+  ## is rebuilt deterministically from the loaded message history rather than
+  ## persisted directly. Caller is expected to hold rm.lock.
   try:
     if channelId notin rm.channels:
-      rm.channels[channelId] = ChannelContext.new(
+      let channel = ChannelContext.new(
         RollingBloomFilter.init(rm.config.bloomFilterCapacity, rm.config.bloomFilterErrorRate)
       )
+      let snapshot = rm.persistence.loadAllForChannel(channelId)
+      channel.lamportTimestamp = snapshot.lamportTimestamp
+      for msg in snapshot.messageHistory:
+        channel.messageHistory[msg.messageId] = msg
+        channel.bloomFilter.add(msg.messageId)
+      for unack in snapshot.outgoingBuffer:
+        channel.outgoingBuffer.add(unack)
+      for incoming in snapshot.incomingBuffer:
+        channel.incomingBuffer[incoming.message.messageId] = incoming
+      for (msgId, entry) in snapshot.outgoingRepairBuffer:
+        channel.outgoingRepairBuffer[msgId] = entry
+      for (msgId, entry) in snapshot.incomingRepairBuffer:
+        channel.incomingRepairBuffer[msgId] = entry
+      rm.channels[channelId] = channel
     return rm.channels[channelId]
   except Exception:
     error "Failed to get or create channel",
@@ -256,6 +300,7 @@ proc removeChannel*(
     try:
       if channelId in rm.channels:
         let channel = rm.channels[channelId]
+        rm.dropChannelFromPersistence(channelId, channel)
         channel.outgoingBuffer.setLen(0)
         channel.incomingBuffer.clear()
         channel.messageHistory.clear()

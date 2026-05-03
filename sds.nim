@@ -7,10 +7,13 @@ export types, protobuf, sds_utils, rolling_bloom_filter
 proc newReliabilityManager*(
     config: ReliabilityConfig = defaultConfig(),
     participantId: SdsParticipantID = "".SdsParticipantID,
+    persistence: Persistence = noOpPersistence(),
 ): Result[ReliabilityManager, ReliabilityError] =
   ## Creates a new multi-channel ReliabilityManager.
+  ## `persistence` defaults to a no-op backend; supply a real one to durably
+  ## store SDS state across restarts.
   try:
-    let rm = ReliabilityManager.new(config, participantId)
+    let rm = ReliabilityManager.new(config, participantId, persistence)
     return ok(rm)
   except Exception:
     error "Failed to create ReliabilityManager", msg = getCurrentExceptionMsg()
@@ -53,7 +56,7 @@ proc reviewAckStatus(rm: ReliabilityManager, msg: SdsMessage) {.gcsafe.} =
     return
 
   let channel = rm.channels[msg.channelId]
-  var toDelete: seq[int] = @[]
+  var toDelete: seq[(int, SdsMessageID)] = @[]
   var i = 0
 
   while i < channel.outgoingBuffer.len:
@@ -61,11 +64,13 @@ proc reviewAckStatus(rm: ReliabilityManager, msg: SdsMessage) {.gcsafe.} =
     if outMsg.isAcknowledged(msg.causalHistory, rbf):
       if not rm.onMessageSent.isNil():
         rm.onMessageSent(outMsg.message.messageId, outMsg.message.channelId)
-      toDelete.add(i)
+      toDelete.add((i, outMsg.message.messageId))
     inc i
 
-  for i in countdown(toDelete.high, 0):
-    channel.outgoingBuffer.delete(toDelete[i])
+  for k in countdown(toDelete.high, 0):
+    let (idx, ackedId) = toDelete[k]
+    channel.outgoingBuffer.delete(idx)
+    rm.persistence.removeOutgoing(msg.channelId, ackedId)
 
 proc wrapOutgoingMessage*(
     rm: ReliabilityManager,
@@ -108,6 +113,7 @@ proc wrapOutgoingMessage*(
         expiredKeys.add(eligible[i][0])
       for key in expiredKeys:
         channel.outgoingRepairBuffer.del(key)
+        rm.persistence.removeOutgoingRepair(channelId, key)
 
       let msg = SdsMessage.init(
         messageId = messageId,
@@ -120,9 +126,10 @@ proc wrapOutgoingMessage*(
         repairRequest = repairReqs,
       )
 
-      channel.outgoingBuffer.add(
+      let unackMsg =
         UnacknowledgedMessage.init(message = msg, sendTime = getTime(), resendAttempts = 0)
-      )
+      channel.outgoingBuffer.add(unackMsg)
+      rm.persistence.saveOutgoing(channelId, unackMsg)
 
       channel.bloomFilter.add(msg.messageId)
       # The full SdsMessage carries senderId and content, so a single
@@ -168,11 +175,15 @@ proc processIncomingBuffer(rm: ReliabilityManager, channelId: SdsChannelID) {.gc
           if remainingId notin processed:
             if msgId in entry.missingDeps:
               channel.incomingBuffer[remainingId].missingDeps.excl(msgId)
+              rm.persistence.saveIncoming(
+                channelId, channel.incomingBuffer[remainingId]
+              )
               if channel.incomingBuffer[remainingId].missingDeps.len == 0:
                 readyToProcess.add(remainingId)
 
     for msgId in processed:
       channel.incomingBuffer.del(msgId)
+      rm.persistence.removeIncoming(channelId, msgId)
 
 proc unwrapReceivedMessage*(
     rm: ReliabilityManager, message: seq[byte]
@@ -193,7 +204,9 @@ proc unwrapReceivedMessage*(
     # SDS-R: opportunistic repair-buffer cleanup — applies to duplicates too,
     # so rebroadcasts cancel redundant responses on peers that already have the message.
     channel.outgoingRepairBuffer.del(msg.messageId)
+    rm.persistence.removeOutgoingRepair(channelId, msg.messageId)
     channel.incomingRepairBuffer.del(msg.messageId)
+    rm.persistence.removeIncomingRepair(channelId, msg.messageId)
 
     if msg.messageId in channel.messageHistory:
       return ok((msg.content, @[], channelId))
@@ -211,6 +224,7 @@ proc unwrapReceivedMessage*(
     for repairEntry in msg.repairRequest:
       # Remove from our own outgoing repair buffer (someone else is also requesting)
       channel.outgoingRepairBuffer.del(repairEntry.messageId)
+      rm.persistence.removeOutgoingRepair(channelId, repairEntry.messageId)
       if repairEntry.messageId in channel.messageHistory and
          rm.participantId.len > 0 and repairEntry.senderId.len > 0:
         if isInResponseGroup(
@@ -223,11 +237,13 @@ proc unwrapReceivedMessage*(
               rm.participantId, repairEntry.senderId,
               repairEntry.messageId, rm.config.repairTMax
             )
-            channel.incomingRepairBuffer[repairEntry.messageId] = IncomingRepairEntry(
+            let inEntry = IncomingRepairEntry(
               inHistEntry: repairEntry,
               cachedMessage: serialized.get(),
               minTimeRepairResp: now + tResp,
             )
+            channel.incomingRepairBuffer[repairEntry.messageId] = inEntry
+            rm.persistence.saveIncomingRepair(channelId, repairEntry.messageId, inEntry)
 
     var missingDeps = rm.checkDependencies(msg.causalHistory, channelId)
 
@@ -238,23 +254,30 @@ proc unwrapReceivedMessage*(
           depsInBuffer = true
           break
       if depsInBuffer:
-        channel.incomingBuffer[msg.messageId] =
+        let entry =
           IncomingMessage.init(message = msg, missingDeps = initHashSet[SdsMessageID]())
+        channel.incomingBuffer[msg.messageId] = entry
+        rm.persistence.saveIncoming(channelId, entry)
       else:
         rm.addToHistory(msg, channelId)
         # Unblock any buffered messages that were waiting on this one.
+        var unblocked: seq[SdsMessageID] = @[]
         for pendingId, entry in channel.incomingBuffer:
           if msg.messageId in entry.missingDeps:
             channel.incomingBuffer[pendingId].missingDeps.excl(msg.messageId)
+            unblocked.add(pendingId)
+        for pendingId in unblocked:
+          rm.persistence.saveIncoming(channelId, channel.incomingBuffer[pendingId])
         rm.processIncomingBuffer(channelId)
         if not rm.onMessageReady.isNil():
           rm.onMessageReady(msg.messageId, channelId)
     else:
-      channel.incomingBuffer[msg.messageId] =
-        IncomingMessage.init(
-          message = msg,
-          missingDeps = missingDeps.getMessageIds().toHashSet(),
-        )
+      let entry = IncomingMessage.init(
+        message = msg,
+        missingDeps = missingDeps.getMessageIds().toHashSet(),
+      )
+      channel.incomingBuffer[msg.messageId] = entry
+      rm.persistence.saveIncoming(channelId, entry)
       if not rm.onMissingDependencies.isNil():
         rm.onMissingDependencies(msg.messageId, missingDeps, channelId)
 
@@ -266,10 +289,12 @@ proc unwrapReceivedMessage*(
               rm.participantId, dep.messageId,
               rm.config.repairTMin, rm.config.repairTMax
             )
-            channel.outgoingRepairBuffer[dep.messageId] = OutgoingRepairEntry(
+            let outEntry = OutgoingRepairEntry(
               outHistEntry: dep,
               minTimeRepairReq: now + tReq,
             )
+            channel.outgoingRepairBuffer[dep.messageId] = outEntry
+            rm.persistence.saveOutgoingRepair(channelId, dep.messageId, outEntry)
 
     return ok((msg.content, missingDeps, channelId))
   except Exception:
@@ -290,13 +315,19 @@ proc markDependenciesMet*(
       if not channel.bloomFilter.contains(msgId):
         channel.bloomFilter.add(msgId)
 
+      var unblocked: seq[SdsMessageID] = @[]
       for pendingId, entry in channel.incomingBuffer:
         if msgId in entry.missingDeps:
           channel.incomingBuffer[pendingId].missingDeps.excl(msgId)
+          unblocked.add(pendingId)
+      for pendingId in unblocked:
+        rm.persistence.saveIncoming(channelId, channel.incomingBuffer[pendingId])
 
       # SDS-R: clear from repair buffers (dependency now met)
       channel.outgoingRepairBuffer.del(msgId)
+      rm.persistence.removeOutgoingRepair(channelId, msgId)
       channel.incomingRepairBuffer.del(msgId)
+      rm.persistence.removeIncomingRepair(channelId, msgId)
 
     rm.processIncomingBuffer(channelId)
     return ok()
@@ -343,9 +374,11 @@ proc checkUnacknowledgedMessages(
           updatedMsg.resendAttempts += 1
           updatedMsg.sendTime = now
           newOutgoingBuffer.add(updatedMsg)
+          rm.persistence.saveOutgoing(channelId, updatedMsg)
         else:
           if not rm.onMessageSent.isNil():
             rm.onMessageSent(unackMsg.message.messageId, channelId)
+          rm.persistence.removeOutgoing(channelId, unackMsg.message.messageId)
       else:
         newOutgoingBuffer.add(unackMsg)
 
@@ -400,6 +433,7 @@ proc runRepairSweep*(rm: ReliabilityManager) {.gcsafe, raises: [].} =
           for msgId in toRebroadcast:
             let entry = channel.incomingRepairBuffer[msgId]
             channel.incomingRepairBuffer.del(msgId)
+            rm.persistence.removeIncomingRepair(channelId, msgId)
             if not rm.onRepairReady.isNil():
               rm.onRepairReady(entry.cachedMessage, channelId)
 
@@ -411,6 +445,7 @@ proc runRepairSweep*(rm: ReliabilityManager) {.gcsafe, raises: [].} =
               toRemove.add(msgId)
           for msgId in toRemove:
             channel.outgoingRepairBuffer.del(msgId)
+            rm.persistence.removeOutgoingRepair(channelId, msgId)
         except Exception:
           error "Error in repair sweep for channel",
             channelId = channelId, msg = getCurrentExceptionMsg()
@@ -436,6 +471,8 @@ proc resetReliabilityManager*(rm: ReliabilityManager): Result[void, ReliabilityE
   withLock rm.lock:
     try:
       for channelId, channel in rm.channels:
+        rm.dropChannelFromPersistence(channelId, channel)
+        rm.persistence.saveLamport(channelId, 0)
         channel.lamportTimestamp = 0
         channel.messageHistory.clear()
         channel.outgoingBuffer.setLen(0)
