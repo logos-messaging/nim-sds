@@ -1,4 +1,5 @@
 import std/times
+import chronicles
 
 const
   DefaultMaxMessageHistory* = 1000
@@ -49,6 +50,13 @@ proc init*(
     maxRepairRequests: int = DefaultMaxRepairRequests,
     repairSweepInterval: Duration = DefaultRepairSweepInterval,
 ): T =
+  # Bloom is rebuilt by replaying messageHistory on restart and is also the
+  # outgoing summary peers see. A bloom smaller than the log causes continuous
+  # clean() churn and incomplete summaries to peers, with no compensating gain.
+  if maxMessageHistory > bloomFilterCapacity:
+    warn "maxMessageHistory > bloomFilterCapacity will cause continuous bloom rebuilds and incomplete summaries to peers; reduce maxMessageHistory or increase bloomFilterCapacity unless you have a specific reason",
+      maxMessageHistory = maxMessageHistory,
+      bloomFilterCapacity = bloomFilterCapacity
   return T(
     bloomFilterCapacity: bloomFilterCapacity,
     bloomFilterErrorRate: bloomFilterErrorRate,

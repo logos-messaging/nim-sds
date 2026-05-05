@@ -25,8 +25,8 @@ type
     ## filter is NOT in the snapshot — callers rebuild it from `messageHistory`.
     lamportTimestamp*: int64
     messageHistory*: seq[SdsMessage]
-      ## Delivered messages, oldest first (insertion order preserved for
-      ## causal-history tail access and FIFO eviction).
+      ## MUST be ordered oldest-first. FIFO eviction relies on insertion order;
+      ## skipping ORDER BY corrupts the log across restarts.
     outgoingBuffer*: seq[UnacknowledgedMessage]
     incomingBuffer*: seq[IncomingMessage]
     outgoingRepairBuffer*: seq[(SdsMessageID, OutgoingRepairEntry)]
@@ -75,7 +75,7 @@ type
     removeIncomingRepair*:
       proc(channelId: SdsChannelID, msgId: SdsMessageID) {.gcsafe, raises: [].}
 
-    # Bootstrap on `addChannel` / `getOrCreateChannel`
+    # Bootstrap on `addChannel` / `getOrCreateChannel`.
     loadAllForChannel*:
       proc(channelId: SdsChannelID): ChannelSnapshot {.gcsafe, raises: [].}
 
