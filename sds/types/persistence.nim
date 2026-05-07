@@ -75,6 +75,13 @@ type
     removeIncomingRepair*:
       proc(channelId: SdsChannelID, msgId: SdsMessageID) {.gcsafe, raises: [].}
 
+    # Wipe all persisted state for a channel in one transactional call.
+    # Called by removeChannel / resetReliabilityManager. Backends should
+    # implement this atomically (e.g. one BEGIN/COMMIT) — a per-row loop on
+    # the nim-sds side would mean N fsyncs per drop.
+    dropChannel*:
+      proc(channelId: SdsChannelID) {.gcsafe, raises: [].}
+
     # Bootstrap on `addChannel` / `getOrCreateChannel`.
     loadAllForChannel*:
       proc(channelId: SdsChannelID): ChannelSnapshot {.gcsafe, raises: [].}
@@ -111,6 +118,8 @@ proc noOpPersistence*(): Persistence =
     ) =
       discard,
     removeIncomingRepair: proc(channelId: SdsChannelID, msgId: SdsMessageID) =
+      discard,
+    dropChannel: proc(channelId: SdsChannelID) =
       discard,
     loadAllForChannel: proc(channelId: SdsChannelID): ChannelSnapshot =
       ChannelSnapshot(),

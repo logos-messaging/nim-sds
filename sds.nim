@@ -471,7 +471,7 @@ proc resetReliabilityManager*(rm: ReliabilityManager): Result[void, ReliabilityE
   withLock rm.lock:
     try:
       for channelId, channel in rm.channels:
-        rm.dropChannelFromPersistence(channelId, channel)
+        rm.dropChannelFromPersistence(channelId)
         channel.lamportTimestamp = 0
         channel.messageHistory.clear()
         channel.outgoingBuffer.setLen(0)

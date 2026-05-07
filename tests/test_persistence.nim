@@ -91,7 +91,9 @@ suite "Persistence: write → restart → read-back":
     check "msg-x" notin store.outgoing[testChannel]
     rm.cleanup()
 
-  test "removeChannel fires per-entry removes":
+  test "removeChannel issues exactly one dropChannel call and wipes all state":
+    # Regression for PR #66 review: removal must be a single transactional
+    # drop, not N per-row removes — otherwise SQLite eats N fsyncs per drop.
     let store = newInMemoryStore()
     let p = newInMemoryPersistence(store)
     let rm = newReliabilityManager(persistence = p).get()
@@ -99,9 +101,15 @@ suite "Persistence: write → restart → read-back":
     discard rm.wrapOutgoingMessage(@[1.byte], "msg-r", testChannel)
     check store.outgoing[testChannel].len == 1
     check store.lamports[testChannel] > 0
+
     check rm.removeChannel(testChannel).isOk()
-    check store.outgoing[testChannel].len == 0
-    check store.lamports[testChannel] == 0
+    check store.dropChannelCalls.getOrDefault(testChannel) == 1
+    check testChannel notin store.outgoing
+    check testChannel notin store.lamports
+    check testChannel notin store.log
+    check testChannel notin store.incoming
+    check testChannel notin store.outgoingRepair
+    check testChannel notin store.incomingRepair
     rm.cleanup()
 
   test "noOpPersistence keeps existing manager working":
@@ -186,8 +194,8 @@ suite "Persistence: write → restart → read-back":
     rm2.cleanup()
 
   test "removeChannel + recreate does not inherit stale lamport":
-    # Regression: dropChannelFromPersistence used to skip saveLamport(0),
-    # so the channels row survived removeChannel and a recreate inherited it.
+    # Regression: dropChannel must wipe the lamport row; otherwise a recreate
+    # of the same channelId after restart picks up the old timestamp.
     let store = newInMemoryStore()
     let p1 = newInMemoryPersistence(store)
     let rm1 = newReliabilityManager(persistence = p1).get()
@@ -195,7 +203,7 @@ suite "Persistence: write → restart → read-back":
     discard rm1.wrapOutgoingMessage(@[1.byte], "m-old", testChannel)
     check store.lamports[testChannel] > 0
     check rm1.removeChannel(testChannel).isOk()
-    check store.lamports[testChannel] == 0
+    check testChannel notin store.lamports
     rm1.cleanup()
 
     # Recreate the same channelId after a restart — must start fresh.

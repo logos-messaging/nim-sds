@@ -14,6 +14,9 @@ type InMemoryStore* = ref object
   incoming*: Table[SdsChannelID, OrderedTable[SdsMessageID, IncomingMessage]]
   outgoingRepair*: Table[SdsChannelID, OrderedTable[SdsMessageID, OutgoingRepairEntry]]
   incomingRepair*: Table[SdsChannelID, OrderedTable[SdsMessageID, IncomingRepairEntry]]
+  dropChannelCalls*: Table[SdsChannelID, int]
+    ## Per-channel counter; lets tests assert dropChannel is invoked exactly
+    ## once per logical drop (not N times — see PR #66 review).
 
 proc newInMemoryStore*(): InMemoryStore =
   InMemoryStore()
@@ -88,6 +91,17 @@ proc newInMemoryPersistence*(store: InMemoryStore): Persistence =
       {.cast(raises: []).}:
         if channelId in store.incomingRepair:
           store.incomingRepair[channelId].del(msgId),
+
+    dropChannel: proc(channelId: SdsChannelID) {.gcsafe, raises: [].} =
+      {.cast(raises: []).}:
+        store.lamports.del(channelId)
+        store.log.del(channelId)
+        store.outgoing.del(channelId)
+        store.incoming.del(channelId)
+        store.outgoingRepair.del(channelId)
+        store.incomingRepair.del(channelId)
+        store.dropChannelCalls[channelId] =
+          store.dropChannelCalls.getOrDefault(channelId) + 1,
 
     loadAllForChannel: proc(channelId: SdsChannelID): ChannelSnapshot {.gcsafe, raises: [].} =
       {.cast(raises: []).}:

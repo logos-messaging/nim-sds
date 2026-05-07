@@ -15,22 +15,12 @@ proc defaultConfig*(): ReliabilityConfig =
   return ReliabilityConfig.init()
 
 proc dropChannelFromPersistence*(
-    rm: ReliabilityManager, channelId: SdsChannelID, channel: ChannelContext
+    rm: ReliabilityManager, channelId: SdsChannelID
 ) {.gcsafe, raises: [].} =
-  ## Fires per-entry remove calls for every buffered entry in the channel.
-  ## Called by cleanup / removeChannel / resetReliabilityManager before they
-  ## wipe in-memory state, so on-disk state stays consistent.
-  for unack in channel.outgoingBuffer:
-    rm.persistence.removeOutgoing(channelId, unack.message.messageId)
-  for msgId in channel.incomingBuffer.keys:
-    rm.persistence.removeIncoming(channelId, msgId)
-  for msgId in channel.messageHistory.keys:
-    rm.persistence.removeLogEntry(channelId, msgId)
-  for msgId in channel.outgoingRepairBuffer.keys:
-    rm.persistence.removeOutgoingRepair(channelId, msgId)
-  for msgId in channel.incomingRepairBuffer.keys:
-    rm.persistence.removeIncomingRepair(channelId, msgId)
-  rm.persistence.saveLamport(channelId, 0)
+  ## Wipes all persisted state for a channel via a single backend call.
+  ## Called by removeChannel / resetReliabilityManager before they clear
+  ## in-memory state. Backend executes the wipe in one transaction.
+  rm.persistence.dropChannel(channelId)
 
 proc cleanup*(rm: ReliabilityManager) {.raises: [].} =
   ## Releases in-memory state. Does NOT wipe persistence — the manager may be
@@ -301,7 +291,7 @@ proc removeChannel*(
     try:
       if channelId in rm.channels:
         let channel = rm.channels[channelId]
-        rm.dropChannelFromPersistence(channelId, channel)
+        rm.dropChannelFromPersistence(channelId)
         channel.outgoingBuffer.setLen(0)
         channel.incomingBuffer.clear()
         channel.messageHistory.clear()
