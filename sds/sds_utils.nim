@@ -30,6 +30,7 @@ proc dropChannelFromPersistence*(
     rm.persistence.removeOutgoingRepair(channelId, msgId)
   for msgId in channel.incomingRepairBuffer.keys:
     rm.persistence.removeIncomingRepair(channelId, msgId)
+  rm.persistence.saveLamport(channelId, 0)
 
 proc cleanup*(rm: ReliabilityManager) {.raises: [].} =
   ## Releases in-memory state. Does NOT wipe persistence — the manager may be
