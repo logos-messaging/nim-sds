@@ -22,7 +22,7 @@ suite "Core Operations":
   var rm: ReliabilityManager
 
   setup:
-    let rmResult = newReliabilityManager()
+    let rmResult = newReliabilityManager(participantId = "alice")
     check rmResult.isOk()
     rm = rmResult.get()
     check rm.ensureChannel(testChannel).isOk()
@@ -119,7 +119,7 @@ suite "Reliability Mechanisms":
   var rm: ReliabilityManager
 
   setup:
-    let rmResult = newReliabilityManager()
+    let rmResult = newReliabilityManager(participantId = "alice")
     check rmResult.isOk()
     rm = rmResult.get()
     check rm.ensureChannel(testChannel).isOk()
@@ -537,7 +537,7 @@ suite "Periodic Tasks & Buffer Management":
   var rm: ReliabilityManager
 
   setup:
-    let rmResult = newReliabilityManager()
+    let rmResult = newReliabilityManager(participantId = "alice")
     check rmResult.isOk()
     rm = rmResult.get()
     check rm.ensureChannel(testChannel).isOk()
@@ -599,7 +599,7 @@ suite "Periodic Tasks & Buffer Management":
     config.bloomFilterCapacity = 2 # Small capacity for testing
     config.maxResendAttempts = 3 # Set a low number of max attempts
 
-    let rmResultP = newReliabilityManager(config)
+    let rmResultP = newReliabilityManager(participantId = "alice", config = config)
     check rmResultP.isOk()
     let rm = rmResultP.get()
     check rm.ensureChannel(testChannel).isOk()
@@ -675,7 +675,7 @@ suite "Special Cases Handling":
   var rm: ReliabilityManager
 
   setup:
-    let rmResult = newReliabilityManager()
+    let rmResult = newReliabilityManager(participantId = "alice")
     check rmResult.isOk()
     rm = rmResult.get()
     check rm.ensureChannel(testChannel).isOk()
@@ -767,7 +767,7 @@ suite "Special Cases Handling":
 
 suite "cleanup":
   test "cleanup works correctly":
-    let rmResult = newReliabilityManager()
+    let rmResult = newReliabilityManager(participantId = "alice")
     check rmResult.isOk()
     let rm = rmResult.get()
     check rm.ensureChannel(testChannel).isOk()
@@ -789,7 +789,7 @@ suite "Multi-Channel ReliabilityManager Tests":
   var rm: ReliabilityManager
 
   setup:
-    let rmResult = newReliabilityManager()
+    let rmResult = newReliabilityManager(participantId = "alice")
     check rmResult.isOk()
     rm = rmResult.get()
 
@@ -1371,7 +1371,9 @@ suite "SDS-R: Edge Cases and Defensive Branches":
 
 suite "SDS-R: Lifecycle and State":
   test "empty participantId disables outgoing repair creation":
-    let rm = newReliabilityManager().get()  # empty participantId
+    # Explicitly pass empty id to exercise the SDS-R no-op branch. Required-arg
+    # signature means callers can no longer accidentally land here.
+    let rm = newReliabilityManager(participantId = "".SdsParticipantID).get()
     defer: rm.cleanup()
     check rm.ensureChannel(testChannel).isOk()
 
@@ -1671,7 +1673,7 @@ proc addPeer(
     participantId: SdsParticipantID,
     config: ReliabilityConfig = defaultConfig(),
 ): ReliabilityManager =
-  let rm = newReliabilityManager(config, participantId).get()
+  let rm = newReliabilityManager(participantId, config).get()
   doAssert rm.ensureChannel(testChannel).isOk()
   bus.peers[participantId] = rm
   bus.delivered[participantId] = @[]
