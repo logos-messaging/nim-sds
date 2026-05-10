@@ -33,7 +33,11 @@ proc destroyShared(self: ptr SdsLifecycleRequest) =
 proc createReliabilityManager(
     appCallbacks: AppCallbacks = nil
 ): Future[Result[ReliabilityManager, string]] {.async.} =
-  let rm = newReliabilityManager().valueOr:
+  # TODO: thread `participantId` through SdsNewReliabilityManager FFI input
+  # and remove this hardcoded "". Empty id silently disables SDS-R; this is
+  # acceptable as a temporary FFI-only fallback until sds-go-bindings and
+  # logos-delivery's C-side caller are updated to supply the identity.
+  let rm = newReliabilityManager(participantId = "".SdsParticipantID).valueOr:
     error "Failed creating reliability manager", error = error
     return err("Failed creating reliability manager: " & $error)
 

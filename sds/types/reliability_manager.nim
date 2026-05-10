@@ -27,10 +27,16 @@ type ReliabilityManager* = ref object
 
 proc new*(
     T: type ReliabilityManager,
+    participantId: SdsParticipantID,
     config: ReliabilityConfig,
-    participantId: SdsParticipantID = "".SdsParticipantID,
     persistence: Persistence = noOpPersistence(),
 ): T =
+  ## `participantId` is REQUIRED — it is the per-manager identity SDS-R uses
+  ## to populate response groups and decide which incoming repair requests
+  ## this manager is authoritative for. The Reliable Channel API spec
+  ## (`senderId`) likewise lists it as required. An empty id silently
+  ## disables SDS-R; callers that genuinely want plain SDS without repair
+  ## must pass `""` explicitly.
   let rm = T(
     channels: initTable[SdsChannelID, ChannelContext](),
     config: config,

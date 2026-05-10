@@ -5,15 +5,16 @@ import sds/[types, protobuf, sds_utils, rolling_bloom_filter]
 export types, protobuf, sds_utils, rolling_bloom_filter
 
 proc newReliabilityManager*(
+    participantId: SdsParticipantID,
     config: ReliabilityConfig = defaultConfig(),
-    participantId: SdsParticipantID = "".SdsParticipantID,
     persistence: Persistence = noOpPersistence(),
 ): Result[ReliabilityManager, ReliabilityError] =
   ## Creates a new multi-channel ReliabilityManager.
+  ## `participantId` is REQUIRED (see `ReliabilityManager.new`).
   ## `persistence` defaults to a no-op backend; supply a real one to durably
   ## store SDS state across restarts.
   try:
-    let rm = ReliabilityManager.new(config, participantId, persistence)
+    let rm = ReliabilityManager.new(participantId, config, persistence)
     return ok(rm)
   except Exception:
     error "Failed to create ReliabilityManager", msg = getCurrentExceptionMsg()
