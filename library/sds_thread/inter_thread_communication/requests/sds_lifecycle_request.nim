@@ -41,7 +41,7 @@ proc createReliabilityManager(
     error "Failed creating reliability manager", error = error
     return err("Failed creating reliability manager: " & $error)
 
-  rm.setCallbacks(
+  await rm.setCallbacks(
     appCallbacks.messageReadyCb, appCallbacks.messageSentCb,
     appCallbacks.missingDependenciesCb, appCallbacks.periodicSyncCb,
     appCallbacks.retrievalHintProvider, appCallbacks.repairReadyCb,
@@ -61,7 +61,7 @@ proc process*(
       error "CREATE_RELIABILITY_MANAGER failed", error = error
       return err("error processing CREATE_RELIABILITY_MANAGER request: " & $error)
   of RESET_RELIABILITY_MANAGER:
-    resetReliabilityManager(rm[]).isOkOr:
+    (await resetReliabilityManager(rm[])).isOkOr:
       error "RESET_RELIABILITY_MANAGER failed", error = error
       return err("error processing RESET_RELIABILITY_MANAGER request: " & $error)
   of START_PERIODIC_TASKS:

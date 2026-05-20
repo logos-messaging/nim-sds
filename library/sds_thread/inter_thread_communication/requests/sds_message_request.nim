@@ -53,7 +53,9 @@ proc process*(
   of WRAP_MESSAGE:
     let messageBytes = self.message.toSeq()
 
-    let wrappedMessage = wrapOutgoingMessage(rm[], messageBytes, $self.messageId, $self.channelId).valueOr:
+    let wrappedMessage = (
+      await wrapOutgoingMessage(rm[], messageBytes, $self.messageId, $self.channelId)
+    ).valueOr:
       error "WRAP_MESSAGE failed", error = error
       return err("error processing WRAP_MESSAGE request: " & $error)
 
@@ -62,7 +64,9 @@ proc process*(
   of UNWRAP_MESSAGE:
     let messageBytes = self.message.toSeq()
 
-    let (unwrappedMessage, missingDeps, extractedChannelId) = unwrapReceivedMessage(rm[], messageBytes).valueOr:
+    let (unwrappedMessage, missingDeps, extractedChannelId) = (
+      await unwrapReceivedMessage(rm[], messageBytes)
+    ).valueOr:
       return err("error processing UNWRAP_MESSAGE request: " & $error)
 
     let res = SdsUnwrapResponse(message: unwrappedMessage, missingDeps: missingDeps, channelId: extractedChannelId)

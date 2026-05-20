@@ -43,7 +43,7 @@ proc process*(
     let messageIdsC = self.messageIds.toSeq()
     let messageIds = messageIdsC.mapIt($it)
 
-    markDependenciesMet(rm[], messageIds, $self.channelId).isOkOr:
+    (await markDependenciesMet(rm[], messageIds, $self.channelId)).isOkOr:
       error "MARK_DEPENDENCIES_MET failed", error = error
       return err("error processing MARK_DEPENDENCIES_MET request: " & $error)
 
