@@ -1,33 +1,12 @@
-import unittest, results, chronos, std/[times, options, tables]
+import results, std/[times, options, tables]
 import sds
+import ./async_unittest
 
 # Test-only convenience: implicit string → SdsParticipantID so test fixtures
 # can use string literals. Production code retains the distinct-type safety.
 converter toParticipantID(s: string): SdsParticipantID = s.SdsParticipantID
 
 const testChannel = "testChannel"
-
-template asyncTest(name: string, body: untyped) =
-  ## Wraps a unittest `test` body in an async proc so tests can `await` the
-  ## now-async ReliabilityManager API directly. Setup/teardown blocks still
-  ## run in the outer (sync) scope — use `waitFor` for any async calls there.
-  ## unittest's `check` raises `Exception`, which is wider than chronos's
-  ## default `CatchableError` for async procs — so we catch it inside and
-  ## re-raise after waitFor, where unittest's normal handling can see it.
-  ## cast(gcsafe) is needed because suite-level `var rm` looks like a global
-  ## to the closure capture, but the FFI runtime is single-threaded so the
-  ## "not gcsafe" warning isn't a real hazard here.
-  test name:
-    var asyncTestErr {.inject.}: ref Exception = nil
-    proc inner() {.async.} =
-      {.cast(gcsafe).}:
-        try:
-          body
-        except Exception as e:
-          asyncTestErr = e
-    waitFor inner()
-    if asyncTestErr != nil:
-      raise asyncTestErr
 
 proc seedBloom(
     rm: ReliabilityManager, channel: SdsChannelID, n: int, prefix = "noise"
@@ -43,15 +22,15 @@ proc seedBloom(
 suite "Core Operations":
   var rm: ReliabilityManager
 
-  setup:
+  asyncSetup:
     let rmResult = newReliabilityManager(participantId = "alice")
     check rmResult.isOk()
     rm = rmResult.get()
-    check (waitFor rm.ensureChannel(testChannel)).isOk()
+    check (await rm.ensureChannel(testChannel)).isOk()
 
-  teardown:
+  asyncTeardown:
     if not rm.isNil:
-      waitFor rm.cleanup()
+      await rm.cleanup()
 
   asyncTest "can create with default config":
     let config = defaultConfig()
@@ -140,15 +119,15 @@ suite "Core Operations":
 suite "Reliability Mechanisms":
   var rm: ReliabilityManager
 
-  setup:
+  asyncSetup:
     let rmResult = newReliabilityManager(participantId = "alice")
     check rmResult.isOk()
     rm = rmResult.get()
-    check (waitFor rm.ensureChannel(testChannel)).isOk()
+    check (await rm.ensureChannel(testChannel)).isOk()
 
-  teardown:
+  asyncTeardown:
     if not rm.isNil:
-      waitFor rm.cleanup()
+      await rm.cleanup()
 
   asyncTest "dependency detection and resolution":
     var messageReadyCount = 0
@@ -558,15 +537,15 @@ suite "Reliability Mechanisms":
 suite "Periodic Tasks & Buffer Management":
   var rm: ReliabilityManager
 
-  setup:
+  asyncSetup:
     let rmResult = newReliabilityManager(participantId = "alice")
     check rmResult.isOk()
     rm = rmResult.get()
-    check (waitFor rm.ensureChannel(testChannel)).isOk()
+    check (await rm.ensureChannel(testChannel)).isOk()
 
-  teardown:
+  asyncTeardown:
     if not rm.isNil:
-      waitFor rm.cleanup()
+      await rm.cleanup()
 
   asyncTest "outgoing buffer management":
     var messageSentCount = 0
@@ -696,15 +675,15 @@ suite "Periodic Tasks & Buffer Management":
 suite "Special Cases Handling":
   var rm: ReliabilityManager
 
-  setup:
+  asyncSetup:
     let rmResult = newReliabilityManager(participantId = "alice")
     check rmResult.isOk()
     rm = rmResult.get()
-    check (waitFor rm.ensureChannel(testChannel)).isOk()
+    check (await rm.ensureChannel(testChannel)).isOk()
 
-  teardown:
+  asyncTeardown:
     if not rm.isNil:
-      waitFor rm.cleanup()
+      await rm.cleanup()
 
   asyncTest "message history limits":
     # Add messages up to max history size
@@ -810,14 +789,14 @@ suite "cleanup":
 suite "Multi-Channel ReliabilityManager Tests":
   var rm: ReliabilityManager
 
-  setup:
+  asyncSetup:
     let rmResult = newReliabilityManager(participantId = "alice")
     check rmResult.isOk()
     rm = rmResult.get()
 
-  teardown:
+  asyncTeardown:
     if not rm.isNil:
-      waitFor rm.cleanup()
+      await rm.cleanup()
 
   asyncTest "can create multi-channel manager without channel ID":
     check rm.channels.len == 0
@@ -1050,17 +1029,17 @@ suite "SDS-R: Computation Functions":
 suite "SDS-R: Repair Buffer Management":
   var rm: ReliabilityManager
 
-  setup:
+  asyncSetup:
     let rmResult = newReliabilityManager(
       participantId = "test-participant"
     )
     check rmResult.isOk()
     rm = rmResult.get()
-    check (waitFor rm.ensureChannel(testChannel)).isOk()
+    check (await rm.ensureChannel(testChannel)).isOk()
 
-  teardown:
+  asyncTeardown:
     if not rm.isNil:
-      waitFor rm.cleanup()
+      await rm.cleanup()
 
   asyncTest "missing deps added to outgoing repair buffer":
     var missingDepsCount = 0
@@ -1580,13 +1559,13 @@ suite "SDS-R: Lifecycle and State":
 suite "SDS-R: Repair Sweep":
   var rm: ReliabilityManager
 
-  setup:
+  asyncSetup:
     rm = newReliabilityManager(participantId = "bob").get()
-    check (waitFor rm.ensureChannel(testChannel)).isOk()
+    check (await rm.ensureChannel(testChannel)).isOk()
 
-  teardown:
+  asyncTeardown:
     if not rm.isNil:
-      waitFor rm.cleanup()
+      await rm.cleanup()
 
   asyncTest "runRepairSweep fires onRepairReady for expired tResp":
     var fireCount = 0
@@ -1666,12 +1645,16 @@ type
     delivered: Table[SdsParticipantID, seq[SdsMessageID]]
     # Log of raw message-ids placed on the wire, tagged with the source peer.
     wireLog: seq[tuple[senderId: SdsParticipantID, messageId: SdsMessageID]]
+    # Queue of (sender, bytes) the repair callback would have delivered if it
+    # could await. Drained explicitly by `bus.drain()` from the test body.
+    pending: seq[(SdsParticipantID, seq[byte])]
 
 proc newTestBus(): TestBus =
   TestBus(
     peers: initOrderedTable[SdsParticipantID, ReliabilityManager](),
     delivered: initTable[SdsParticipantID, seq[SdsMessageID]](),
     wireLog: @[],
+    pending: @[],
   )
 
 proc recordWire(bus: TestBus, senderId: SdsParticipantID, bytes: seq[byte]) {.gcsafe.} =
@@ -1689,6 +1672,16 @@ proc deliverExcept(
     if pid == senderId or pid in exclude:
       continue
     discard await peer.unwrapReceivedMessage(bytes)
+
+proc drain(bus: TestBus): Future[void] {.async.} =
+  ## Delivers every (sender, bytes) the repair callback enqueued. Loops until
+  ## the queue stays empty across one full pass — a delivery may trigger a
+  ## new repair-ready callback that re-enqueues.
+  while bus.pending.len > 0:
+    let batch = move bus.pending
+    bus.pending = @[]
+    for entry in batch:
+      await bus.deliverExcept(entry[0], entry[1], @[])
 
 proc addPeer(
     bus: TestBus,
@@ -1709,12 +1702,11 @@ proc addPeer(
     proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
     proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} = discard,
     onRepairReady = proc(bytes: seq[byte], ch: SdsChannelID) {.gcsafe.} =
+      # The callback contract is sync, so we cannot `await` here. Enqueue the
+      # delivery and let the test drive it via `bus.drain()` instead.
       {.cast(gcsafe).}:
         busRef.recordWire(pid, bytes)
-        # Fire-and-forget delivery from a sync callback context — we cannot
-        # await here, so spawn the async delivery onto the same event loop.
-        asyncSpawn(busRef.deliverExcept(pid, bytes, @[]))
-    ,
+        busRef.pending.add((pid, bytes)),
   )
   return rm
 
@@ -1786,9 +1778,7 @@ suite "SDS-R: Multi-Participant Integration":
     # then run her sweep. She rebroadcasts M1.
     alice.forceIncomingExpired("m1")
     await alice.runRepairSweep()
-
-    # Allow any asyncSpawn'd deliveries from the repair callback to run.
-    await sleepAsync(chronos.milliseconds(10))
+    await bus.drain()
 
     # Bob now has M1 and M2 delivered.
     check:
@@ -1820,7 +1810,7 @@ suite "SDS-R: Multi-Participant Integration":
     # pending entry when Carol receives the rebroadcast.
     alice.forceIncomingExpired("m1")
     await alice.runRepairSweep()
-    await sleepAsync(chronos.milliseconds(10))
+    await bus.drain()
 
     # Carol's pending response must have been cleared by the dedup-path cleanup.
     check "m1" notin carol.channels[testChannel].incomingRepairBuffer
@@ -1828,7 +1818,7 @@ suite "SDS-R: Multi-Participant Integration":
     # Even if we now force-run Carol's sweep, nothing should fire.
     let wireCountBefore = bus.wireLog.len
     await carol.runRepairSweep()
-    await sleepAsync(chronos.milliseconds(10))
+    await bus.drain()
     check bus.wireLog.len == wireCountBefore
 
     # Bob received exactly one rebroadcast of M1.

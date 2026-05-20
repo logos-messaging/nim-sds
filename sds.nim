@@ -511,10 +511,13 @@ proc periodicRepairSweep(
     await sleepAsync(chronos.milliseconds(rm.config.repairSweepInterval.inMilliseconds))
 
 proc startPeriodicTasks*(rm: ReliabilityManager) =
-  ## Starts the periodic tasks for buffer sweeping and sync message sending.
-  asyncSpawn rm.periodicBufferSweep()
-  asyncSpawn rm.periodicSyncMessage()
-  asyncSpawn rm.periodicRepairSweep()
+  ## Starts the periodic background tasks (buffer sweep, sync message,
+  ## SDS-R repair sweep). The futures are kept on the manager so `cleanup`
+  ## can cancel them — without that, the loops would outlive a cleaned-up
+  ## manager and keep firing against cleared state.
+  rm.periodicTasks.add(FutureBase(rm.periodicBufferSweep()))
+  rm.periodicTasks.add(FutureBase(rm.periodicSyncMessage()))
+  rm.periodicTasks.add(FutureBase(rm.periodicRepairSweep()))
 
 proc resetReliabilityManager*(
     rm: ReliabilityManager

@@ -21,6 +21,9 @@ type ReliabilityManager* = ref object
     ## one another at await points; the manager assumes all calls come from
     ## the same Chronos event loop (the FFI worker thread). Multi-OS-thread
     ## use is the caller's responsibility.
+  periodicTasks*: seq[FutureBase]
+    ## Handles to the background loops started by `startPeriodicTasks` so
+    ## `cleanup` can cancel them on shutdown instead of leaking them.
   onMessageReady*: proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.}
   onMessageSent*: proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.}
   onMissingDependencies*: proc(
@@ -48,5 +51,6 @@ proc new*(
     participantId: participantId,
     persistence: persistence,
     lock: newAsyncLock(),
+    periodicTasks: @[],
   )
   return rm

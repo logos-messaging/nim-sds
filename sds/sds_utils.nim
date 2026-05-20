@@ -29,8 +29,16 @@ proc cleanup*(
   ## reconstructed against the same backend after cleanup, so disk state must
   ## survive. For deliberate disk wipe, use `removeChannel` or
   ## `resetReliabilityManager`.
+  ##
+  ## Periodic tasks are cancelled BEFORE acquiring the lock so that a task
+  ## currently blocked on `lock.acquire()` can unwind via CancelledError
+  ## without deadlocking against cleanup itself.
   if rm.isNil():
     return
+  for task in rm.periodicTasks:
+    if not task.finished:
+      await task.cancelAndWait()
+  rm.periodicTasks.setLen(0)
   try:
     await rm.lock.acquire()
     try:

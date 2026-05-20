@@ -1,27 +1,11 @@
-import unittest, results, chronos, std/[tables, sets, times]
+import results, std/[tables, sets, times]
 import sds
+import ./async_unittest
 import ./in_memory_persistence
 
 converter toParticipantID(s: string): SdsParticipantID = s.SdsParticipantID
 
 const testChannel = "testChannel"
-
-template asyncTest(name: string, body: untyped) =
-  ## Wraps a unittest `test` body in an async proc and runs it to completion.
-  ## Tests can now `await` rm.* and rm.persistence.* calls directly.
-  ## unittest's `check` raises Exception (wider than chronos's CatchableError),
-  ## so catch inside the async body and re-raise after waitFor.
-  test name:
-    var asyncTestErr {.inject.}: ref Exception = nil
-    proc inner() {.async.} =
-      {.cast(gcsafe).}:
-        try:
-          body
-        except Exception as e:
-          asyncTestErr = e
-    waitFor inner()
-    if asyncTestErr != nil:
-      raise asyncTestErr
 
 suite "Persistence: write → restart → read-back":
   asyncTest "outgoing buffer survives restart":
