@@ -80,7 +80,8 @@ proc initializeBloomFilter*(
 
 proc `$`*(bf: BloomFilter): string =
   ## Prints the configuration of the Bloom filter.
-  return "Bloom filter with $1 capacity, $2 error rate, $3 hash functions, and requiring $4 bits of memory." %
+  return
+    "Bloom filter with $1 capacity, $2 error rate, $3 hash functions, and requiring $4 bits of memory." %
     [
       $bf.capacity,
       formatFloat(bf.errorRate, format = ffScientific, precision = 1),

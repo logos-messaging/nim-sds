@@ -102,14 +102,13 @@ suite "bloom filter":
 suite "bloom filter special cases":
   test "different patterns of strings":
     const testSize = 10_000
-    let patterns =
-      @[
-        "shortstr",
-        repeat("a", 1000), # Very long string
-        "special@#$%^&*()", # Special characters
-        "unicode→★∑≈", # Unicode characters
-        repeat("pattern", 10), # Repeating pattern
-      ]
+    let patterns = @[
+      "shortstr",
+      repeat("a", 1000), # Very long string
+      "special@#$%^&*()", # Special characters
+      "unicode→★∑≈", # Unicode characters
+      repeat("pattern", 10), # Repeating pattern
+    ]
 
     let bfResult = initializeBloomFilter(testSize, 0.01)
     check bfResult.isOk

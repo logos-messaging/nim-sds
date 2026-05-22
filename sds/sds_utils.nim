@@ -1,11 +1,12 @@
 import std/[times, tables, sequtils, hashes]
 import chronos, chronicles, results
 import ./rolling_bloom_filter
-import ./types/[
-  sds_message_id, history_entry, sds_message, unacknowledged_message, incoming_message,
-  reliability_error, callbacks, app_callbacks, reliability_config, repair_entry,
-  channel_context, reliability_manager,
-]
+import
+  ./types/[
+    sds_message_id, history_entry, sds_message, unacknowledged_message,
+    incoming_message, reliability_error, callbacks, app_callbacks, reliability_config,
+    repair_entry, channel_context, reliability_manager,
+  ]
 export
   sds_message_id, history_entry, sds_message, unacknowledged_message, incoming_message,
   reliability_error, callbacks, app_callbacks, reliability_config, repair_entry,
@@ -16,15 +17,13 @@ proc defaultConfig*(): ReliabilityConfig =
 
 proc dropChannelFromPersistence*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[void] {.async: (raises: []), gcsafe.} =
+) {.async: (raises: []).} =
   ## Wipes all persisted state for a channel via a single backend call.
   ## Called by removeChannel / resetReliabilityManager before they clear
   ## in-memory state. Backend executes the wipe in one transaction.
   await rm.persistence.dropChannel(channelId)
 
-proc cleanup*(
-    rm: ReliabilityManager
-): Future[void] {.async: (raises: []), gcsafe.} =
+proc cleanup*(rm: ReliabilityManager) {.async: (raises: []).} =
   ## Releases in-memory state. Does NOT wipe persistence — the manager may be
   ## reconstructed against the same backend after cleanup, so disk state must
   ## survive. For deliberate disk wipe, use `removeChannel` or
@@ -56,7 +55,7 @@ proc cleanup*(
 
 proc cleanBloomFilter*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[void] {.async: (raises: [CancelledError]), gcsafe.} =
+) {.async: (raises: [CancelledError]).} =
   try:
     await rm.lock.acquire()
     try:
@@ -72,7 +71,7 @@ proc cleanBloomFilter*(
 
 proc addToHistory*(
     rm: ReliabilityManager, msg: SdsMessage, channelId: SdsChannelID
-): Future[void] {.async: (raises: []), gcsafe.} =
+) {.async: (raises: []).} =
   ## Inserts a delivered message into the channel's history map and evicts the
   ## eldest entries when the bound is exceeded. The full SdsMessage is kept so
   ## senderId is available for downstream causal-history population and the
@@ -95,7 +94,7 @@ proc addToHistory*(
 
 proc updateLamportTimestamp*(
     rm: ReliabilityManager, msgTs: int64, channelId: SdsChannelID
-): Future[void] {.async: (raises: []), gcsafe.} =
+) {.async: (raises: []).} =
   try:
     if channelId in rm.channels:
       let channel = rm.channels[channelId]
@@ -105,7 +104,9 @@ proc updateLamportTimestamp*(
     error "Failed to update lamport timestamp",
       channelId = channelId, msgTs = msgTs, error = getCurrentExceptionMsg()
 
-proc newHistoryEntry*(messageId: SdsMessageID, retrievalHint: seq[byte] = @[]): HistoryEntry =
+proc newHistoryEntry*(
+    messageId: SdsMessageID, retrievalHint: seq[byte] = @[]
+): HistoryEntry =
   return HistoryEntry.init(messageId, retrievalHint)
 
 proc toCausalHistory*(messageIds: seq[SdsMessageID]): seq[HistoryEntry] =
@@ -161,14 +162,14 @@ proc isInResponseGroup*(
   ## Determines if this participant is in the response group for a given message per SDS-R spec:
   ## hash(participant_id, message_id) % num_groups == hash(sender_id, message_id) % num_groups
   if numResponseGroups <= 1:
-    return true  # All participants in the same group
+    return true # All participants in the same group
   let myGroup = abs(hash(participantId.string & messageId)) mod numResponseGroups
   let senderGroup = abs(hash(senderId.string & messageId)) mod numResponseGroups
   myGroup == senderGroup
 
 proc getRecentHistoryEntries*(
     rm: ReliabilityManager, n: int, channelId: SdsChannelID
-): Future[seq[HistoryEntry]] {.async: (raises: []), gcsafe.} =
+): Future[seq[HistoryEntry]] {.async: (raises: []).} =
   ## Get recent history entries for sending in causal history.
   ## Populates retrieval hints and senderId (SDS-R) for each entry.
   try:
@@ -177,8 +178,7 @@ proc getRecentHistoryEntries*(
       var orderedIds: seq[SdsMessageID] = @[]
       for msgId in channel.messageHistory.keys:
         orderedIds.add(msgId)
-      let recentMessageIds =
-        orderedIds[max(0, orderedIds.len - n) .. ^1]
+      let recentMessageIds = orderedIds[max(0, orderedIds.len - n) .. ^1]
       var entries: seq[HistoryEntry] = @[]
       for msgId in recentMessageIds:
         var entry = HistoryEntry(messageId: msgId)
@@ -217,7 +217,7 @@ proc checkDependencies*(
 
 proc getMessageHistory*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[seq[SdsMessageID]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[seq[SdsMessageID]] {.async: (raises: [CancelledError]).} =
   try:
     await rm.lock.acquire()
     try:
@@ -239,7 +239,7 @@ proc getMessageHistory*(
 
 proc getOutgoingBuffer*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[seq[UnacknowledgedMessage]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[seq[UnacknowledgedMessage]] {.async: (raises: [CancelledError]).} =
   try:
     await rm.lock.acquire()
     try:
@@ -279,7 +279,7 @@ proc getIncomingBuffer*(
 
 proc getOrCreateChannel*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[ChannelContext] {.async: (raises: [CatchableError]), gcsafe.} =
+): Future[ChannelContext] {.async: (raises: [CatchableError]).} =
   ## Returns the channel context, creating and bootstrapping it from the
   ## persistence backend if it does not yet exist in memory. The bloom filter
   ## is rebuilt deterministically from the loaded message history rather than
@@ -287,7 +287,9 @@ proc getOrCreateChannel*(
   try:
     if channelId notin rm.channels:
       let channel = ChannelContext.new(
-        RollingBloomFilter.init(rm.config.bloomFilterCapacity, rm.config.bloomFilterErrorRate)
+        RollingBloomFilter.init(
+          rm.config.bloomFilterCapacity, rm.config.bloomFilterErrorRate
+        )
       )
       let snapshot = await rm.persistence.loadAllForChannel(channelId)
       channel.lamportTimestamp = snapshot.lamportTimestamp
@@ -311,7 +313,7 @@ proc getOrCreateChannel*(
 
 proc ensureChannel*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[Result[void, ReliabilityError]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: [CancelledError]).} =
   try:
     await rm.lock.acquire()
     try:
@@ -335,7 +337,7 @@ proc ensureChannel*(
 
 proc removeChannel*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[Result[void, ReliabilityError]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: [CancelledError]).} =
   try:
     await rm.lock.acquire()
     try:

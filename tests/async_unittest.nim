@@ -64,6 +64,7 @@ template asyncTest*(name: string, body: untyped) =
               asyncTestTeardownIMPL()
         except Exception as e:
           asyncTestErr = e
+
     waitFor inner()
     if asyncTestErr != nil:
       raise asyncTestErr

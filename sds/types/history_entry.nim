@@ -3,7 +3,8 @@ export sds_message_id
 
 type HistoryEntry* = object
   messageId*: SdsMessageID
-  retrievalHint*: seq[byte] ## Optional hint for efficient retrieval (e.g., Waku message hash)
+  retrievalHint*: seq[byte]
+    ## Optional hint for efficient retrieval (e.g., Waku message hash)
   senderId*: SdsParticipantID ## Original message sender's participant ID (SDS-R)
 
 proc init*(

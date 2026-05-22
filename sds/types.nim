@@ -16,19 +16,7 @@ import sds/types/reliability_manager
 import sds/types/protobuf_error
 
 export
-  sds_message_id,
-  history_entry,
-  sds_message,
-  unacknowledged_message,
-  incoming_message,
-  bloom_filter,
-  rolling_bloom_filter,
-  reliability_error,
-  callbacks,
-  app_callbacks,
-  reliability_config,
-  repair_entry,
-  channel_context,
-  persistence,
-  reliability_manager,
+  sds_message_id, history_entry, sds_message, unacknowledged_message, incoming_message,
+  bloom_filter, rolling_bloom_filter, reliability_error, callbacks, app_callbacks,
+  reliability_config, repair_entry, channel_context, persistence, reliability_manager,
   protobuf_error

@@ -55,8 +55,7 @@ proc init*(
   # clean() churn and incomplete summaries to peers, with no compensating gain.
   if maxMessageHistory > bloomFilterCapacity:
     warn "maxMessageHistory > bloomFilterCapacity will cause continuous bloom rebuilds and incomplete summaries to peers; reduce maxMessageHistory or increase bloomFilterCapacity unless you have a specific reason",
-      maxMessageHistory = maxMessageHistory,
-      bloomFilterCapacity = bloomFilterCapacity
+      maxMessageHistory = maxMessageHistory, bloomFilterCapacity = bloomFilterCapacity
   return T(
     bloomFilterCapacity: bloomFilterCapacity,
     bloomFilterErrorRate: bloomFilterErrorRate,

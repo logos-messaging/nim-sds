@@ -7,10 +7,5 @@ import ./types/repair_entry
 import ./types/reliability_config
 
 export
-  sds_message_id,
-  history_entry,
-  sds_message,
-  unacknowledged_message,
-  incoming_message,
-  repair_entry,
-  reliability_config
+  sds_message_id, history_entry, sds_message, unacknowledged_message, incoming_message,
+  repair_entry, reliability_config

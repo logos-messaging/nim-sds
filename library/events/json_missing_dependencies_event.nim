@@ -13,7 +13,10 @@ proc new*(
     channelId: SdsChannelID,
 ): T =
   return JsonMissingDependenciesEvent(
-    eventType: "missing_dependencies", messageId: messageId, missingDeps: missingDeps, channelId: channelId
+    eventType: "missing_dependencies",
+    messageId: messageId,
+    missingDeps: missingDeps,
+    channelId: channelId,
   )
 
 method `$`*(jsonMissingDependencies: JsonMissingDependenciesEvent): string =

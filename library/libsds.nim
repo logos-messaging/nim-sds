@@ -63,7 +63,8 @@ var
 
 proc acquireCtx(callback: SdsCallBack, userData: pointer): ptr SdsContext =
   ctxPoolLock.acquire()
-  defer: ctxPoolLock.release()
+  defer:
+    ctxPoolLock.release()
   if ctxPool.len > 0:
     result = ctxPool.pop()
   else:
@@ -74,7 +75,8 @@ proc acquireCtx(callback: SdsCallBack, userData: pointer): ptr SdsContext =
 
 proc releaseCtx(ctx: ptr SdsContext) =
   ctxPoolLock.acquire()
-  defer: ctxPoolLock.release()
+  defer:
+    ctxPoolLock.release()
   ctx.userData = nil
   ctx.eventCallback = nil
   ctx.eventUserData = nil
@@ -105,7 +107,9 @@ proc onMessageSent(ctx: ptr SdsContext): MessageSentCallback =
       $JsonMessageSentEvent.new(messageId, channelId)
 
 proc onMissingDependencies(ctx: ptr SdsContext): MissingDependenciesCallback =
-  return proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+  return proc(
+      messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID
+  ) {.gcsafe.} =
     callEventCallback(ctx, "onMissingDependencies"):
       $JsonMissingDependenciesEvent.new(messageId, missingDeps, channelId)
 
@@ -135,7 +139,7 @@ proc onRetrievalHint(ctx: ptr SdsContext): RetrievalHintProvider =
       copyMem(addr hintBytes[0], hint, hintLen)
       deallocShared(hint)
       return hintBytes
-    
+
     return @[]
 
 ### End of not-exported components

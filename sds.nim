@@ -35,7 +35,7 @@ proc isAcknowledged*(
 
 proc reviewAckStatus(
     rm: ReliabilityManager, msg: SdsMessage
-): Future[void] {.async: (raises: [CatchableError]), gcsafe.} =
+) {.async: (raises: [CatchableError]).} =
   try:
     var rbf: Option[RollingBloomFilter]
     if msg.bloomFilter.len > 0:
@@ -46,8 +46,10 @@ proc reviewAckStatus(
           RollingBloomFilter.init(
             filter = bf,
             capacity = bf.capacity,
-            minCapacity = (bf.capacity.float * (100 - CapacityFlexPercent).float / 100.0).int,
-            maxCapacity = (bf.capacity.float * (100 + CapacityFlexPercent).float / 100.0).int,
+            minCapacity =
+              (bf.capacity.float * (100 - CapacityFlexPercent).float / 100.0).int,
+            maxCapacity =
+              (bf.capacity.float * (100 + CapacityFlexPercent).float / 100.0).int,
           )
         )
       else:
@@ -167,7 +169,7 @@ proc wrapOutgoingMessage*(
 
 proc processIncomingBuffer(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[void] {.async: (raises: [CatchableError]), gcsafe.} =
+) {.async: (raises: [CatchableError]).} =
   try:
     await rm.lock.acquire()
     try:
@@ -220,10 +222,12 @@ proc processIncomingBuffer(
 
 proc unwrapReceivedMessage*(
     rm: ReliabilityManager, message: seq[byte]
-): Future[Result[
-    tuple[message: seq[byte], missingDeps: seq[HistoryEntry], channelId: SdsChannelID],
-    ReliabilityError,
-]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[
+    Result[
+      tuple[message: seq[byte], missingDeps: seq[HistoryEntry], channelId: SdsChannelID],
+      ReliabilityError,
+    ]
+] {.async: (raises: [CancelledError]).} =
   ## Unwraps a received message and processes its reliability metadata.
   try:
     let channelId = extractChannelId(message).valueOr:
@@ -258,17 +262,18 @@ proc unwrapReceivedMessage*(
       # Remove from our own outgoing repair buffer (someone else is also requesting)
       channel.outgoingRepairBuffer.del(repairEntry.messageId)
       await rm.persistence.removeOutgoingRepair(channelId, repairEntry.messageId)
-      if repairEntry.messageId in channel.messageHistory and
-         rm.participantId.len > 0 and repairEntry.senderId.len > 0:
+      if repairEntry.messageId in channel.messageHistory and rm.participantId.len > 0 and
+          repairEntry.senderId.len > 0:
         if isInResponseGroup(
-          rm.participantId, repairEntry.senderId,
-          repairEntry.messageId, rm.config.numResponseGroups
+          rm.participantId, repairEntry.senderId, repairEntry.messageId,
+          rm.config.numResponseGroups,
         ):
-          let serialized = serializeMessage(channel.messageHistory[repairEntry.messageId])
+          let serialized =
+            serializeMessage(channel.messageHistory[repairEntry.messageId])
           if serialized.isOk():
             let tResp = computeTResp(
-              rm.participantId, repairEntry.senderId,
-              repairEntry.messageId, rm.config.repairTMax
+              rm.participantId, repairEntry.senderId, repairEntry.messageId,
+              rm.config.repairTMax,
             )
             let inEntry = IncomingRepairEntry(
               inHistEntry: repairEntry,
@@ -302,15 +307,16 @@ proc unwrapReceivedMessage*(
             channel.incomingBuffer[pendingId].missingDeps.excl(msg.messageId)
             unblocked.add(pendingId)
         for pendingId in unblocked:
-          await rm.persistence.saveIncoming(channelId, channel.incomingBuffer[pendingId])
+          await rm.persistence.saveIncoming(
+            channelId, channel.incomingBuffer[pendingId]
+          )
         await rm.processIncomingBuffer(channelId)
         if not rm.onMessageReady.isNil():
           {.cast(raises: []).}:
             rm.onMessageReady(msg.messageId, channelId)
     else:
       let entry = IncomingMessage.init(
-        message = msg,
-        missingDeps = missingDeps.getMessageIds().toHashSet(),
+        message = msg, missingDeps = missingDeps.getMessageIds().toHashSet()
       )
       channel.incomingBuffer[msg.messageId] = entry
       await rm.persistence.saveIncoming(channelId, entry)
@@ -323,13 +329,11 @@ proc unwrapReceivedMessage*(
         for dep in missingDeps:
           if dep.messageId notin channel.outgoingRepairBuffer:
             let tReq = computeTReq(
-              rm.participantId, dep.messageId,
-              rm.config.repairTMin, rm.config.repairTMax
+              rm.participantId, dep.messageId, rm.config.repairTMin,
+              rm.config.repairTMax,
             )
-            let outEntry = OutgoingRepairEntry(
-              outHistEntry: dep,
-              minTimeRepairReq: now + tReq,
-            )
+            let outEntry =
+              OutgoingRepairEntry(outHistEntry: dep, minTimeRepairReq: now + tReq)
             channel.outgoingRepairBuffer[dep.messageId] = outEntry
             await rm.persistence.saveOutgoingRepair(channelId, dep.messageId, outEntry)
 
@@ -342,7 +346,7 @@ proc unwrapReceivedMessage*(
 
 proc markDependenciesMet*(
     rm: ReliabilityManager, messageIds: seq[SdsMessageID], channelId: SdsChannelID
-): Future[Result[void, ReliabilityError]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: [CancelledError]).} =
   ## Marks the specified message dependencies as met.
   try:
     if channelId notin rm.channels:
@@ -385,7 +389,7 @@ proc setCallbacks*(
     onPeriodicSync: PeriodicSyncCallback = nil,
     onRetrievalHint: RetrievalHintProvider = nil,
     onRepairReady: RepairReadyCallback = nil,
-): Future[void] {.async: (raises: [CancelledError]), gcsafe.} =
+) {.async: (raises: [CancelledError]).} =
   ## Sets the callback functions for various events in the ReliabilityManager.
   try:
     await rm.lock.acquire()
@@ -405,7 +409,7 @@ proc setCallbacks*(
 
 proc checkUnacknowledgedMessages(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[void] {.async: (raises: [CancelledError]), gcsafe.} =
+) {.async: (raises: [CancelledError]).} =
   try:
     await rm.lock.acquire()
     try:
@@ -443,9 +447,7 @@ proc checkUnacknowledgedMessages(
     error "Failed to check unacknowledged messages",
       channelId = channelId, msg = getCurrentExceptionMsg()
 
-proc periodicBufferSweep(
-    rm: ReliabilityManager
-) {.async: (raises: [CancelledError]), gcsafe.} =
+proc periodicBufferSweep(rm: ReliabilityManager) {.async: (raises: [CancelledError]).} =
   while true:
     try:
       for channelId, channel in rm.channels:
@@ -458,9 +460,7 @@ proc periodicBufferSweep(
 
     await sleepAsync(chronos.milliseconds(rm.config.bufferSweepInterval.inMilliseconds))
 
-proc periodicSyncMessage(
-    rm: ReliabilityManager
-) {.async: (raises: [CancelledError]), gcsafe.} =
+proc periodicSyncMessage(rm: ReliabilityManager) {.async: (raises: [CancelledError]).} =
   while true:
     try:
       if not rm.onPeriodicSync.isNil():
@@ -470,9 +470,7 @@ proc periodicSyncMessage(
       error "Error in periodic sync", msg = getCurrentExceptionMsg()
     await sleepAsync(chronos.seconds(rm.config.syncMessageInterval.inSeconds))
 
-proc runRepairSweep*(
-    rm: ReliabilityManager
-): Future[void] {.async: (raises: [CancelledError]), gcsafe.} =
+proc runRepairSweep*(rm: ReliabilityManager) {.async: (raises: [CancelledError]).} =
   ## SDS-R: Runs a single pass of the repair sweep.
   ## - Incoming: fires onRepairReady for expired T_resp entries and removes them
   ## - Outgoing: drops entries past T_max window
@@ -518,9 +516,7 @@ proc runRepairSweep*(
   except CatchableError:
     error "Error in repair sweep", msg = getCurrentExceptionMsg()
 
-proc periodicRepairSweep(
-    rm: ReliabilityManager
-) {.async: (raises: [CancelledError]), gcsafe.} =
+proc periodicRepairSweep(rm: ReliabilityManager) {.async: (raises: [CancelledError]).} =
   ## SDS-R: Periodically checks repair buffers for expired entries.
   while true:
     await rm.runRepairSweep()
@@ -537,7 +533,7 @@ proc startPeriodicTasks*(rm: ReliabilityManager) =
 
 proc resetReliabilityManager*(
     rm: ReliabilityManager
-): Future[Result[void, ReliabilityError]] {.async: (raises: [CancelledError]), gcsafe.} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: [CancelledError]).} =
   ## Resets the ReliabilityManager to its initial state.
   try:
     await rm.lock.acquire()

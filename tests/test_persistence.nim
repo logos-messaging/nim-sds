@@ -3,7 +3,8 @@ import sds
 import ./async_unittest
 import ./in_memory_persistence
 
-converter toParticipantID(s: string): SdsParticipantID = s.SdsParticipantID
+converter toParticipantID(s: string): SdsParticipantID =
+  s.SdsParticipantID
 
 const testChannel = "testChannel"
 
@@ -34,7 +35,7 @@ suite "Persistence: write → restart → read-back":
     let rm1 = newReliabilityManager(participantId = "alice", persistence = p1).get()
     check (await rm1.ensureChannel(testChannel)).isOk()
     await rm1.updateLamportTimestamp(42, testChannel)
-    check store.lamports[testChannel] == 43  # max(42, 0) + 1
+    check store.lamports[testChannel] == 43 # max(42, 0) + 1
     await rm1.cleanup()
 
     let p2 = newInMemoryPersistence(store)
@@ -114,7 +115,8 @@ suite "Persistence: write → restart → read-back":
     await rm.cleanup()
 
   asyncTest "noOpPersistence keeps existing manager working":
-    let rm = newReliabilityManager(participantId = "alice").get()  # default no-op persistence
+    let rm = newReliabilityManager(participantId = "alice").get()
+      # default no-op persistence
     check (await rm.ensureChannel(testChannel)).isOk()
     let wrapped = await rm.wrapOutgoingMessage(@[1.byte], "msg-n", testChannel)
     check wrapped.isOk()
@@ -154,7 +156,8 @@ suite "Persistence: write → restart → read-back":
 
     # Final session: all three messages must be in the buffer.
     let pFinal = newInMemoryPersistence(store)
-    let rmFinal = newReliabilityManager(participantId = "alice", persistence = pFinal).get()
+    let rmFinal =
+      newReliabilityManager(participantId = "alice", persistence = pFinal).get()
     check (await rmFinal.ensureChannel(testChannel)).isOk()
     let buf = await rmFinal.getOutgoingBuffer(testChannel)
     check buf.len == 3
@@ -221,9 +224,7 @@ suite "Persistence: write → restart → read-back":
   asyncTest "SDS-R outgoing repair buffer survives restart with absolute t_req_at":
     let store = newInMemoryStore()
     let p1 = newInMemoryPersistence(store)
-    let rm1 = newReliabilityManager(
-      participantId = "alice", persistence = p1
-    ).get()
+    let rm1 = newReliabilityManager(participantId = "alice", persistence = p1).get()
     check (await rm1.ensureChannel(testChannel)).isOk()
 
     # Receive a message that references an unknown dep — triggers SDS-R repair.
@@ -238,15 +239,14 @@ suite "Persistence: write → restart → read-back":
     )
     discard await rm1.unwrapReceivedMessage(serializeMessage(depMsg).get())
     check "missing-dep" in store.outgoingRepair[testChannel]
-    let originalTReqAt = store.outgoingRepair[testChannel]["missing-dep"].minTimeRepairReq
+    let originalTReqAt =
+      store.outgoingRepair[testChannel]["missing-dep"].minTimeRepairReq
     check originalTReqAt.toUnix > 0
     await rm1.cleanup()
 
     # Restart — repair entry must be back with the SAME absolute time, not "now".
     let p2 = newInMemoryPersistence(store)
-    let rm2 = newReliabilityManager(
-      participantId = "alice", persistence = p2
-    ).get()
+    let rm2 = newReliabilityManager(participantId = "alice", persistence = p2).get()
     check (await rm2.ensureChannel(testChannel)).isOk()
     let buf = rm2.channels[testChannel].outgoingRepairBuffer
     check "missing-dep" in buf
@@ -261,8 +261,9 @@ suite "Persistence: write → restart → read-back":
 
     let p1 = newInMemoryPersistence(store)
     let rm1 = newReliabilityManager(
-      participantId = "alice", config = smallCfg, persistence = p1
-    ).get()
+        participantId = "alice", config = smallCfg, persistence = p1
+      )
+      .get()
     check (await rm1.ensureChannel(testChannel)).isOk()
     # Add 5 delivered messages — first 2 should be evicted by FIFO.
     for i in 1 .. 5:
@@ -284,8 +285,9 @@ suite "Persistence: write → restart → read-back":
     # Restart — evicted entries must NOT come back; survivors keep order.
     let p2 = newInMemoryPersistence(store)
     let rm2 = newReliabilityManager(
-      participantId = "alice", config = smallCfg, persistence = p2
-    ).get()
+        participantId = "alice", config = smallCfg, persistence = p2
+      )
+      .get()
     check (await rm2.ensureChannel(testChannel)).isOk()
     let history = rm2.channels[testChannel].messageHistory
     check history.len == 3
@@ -295,9 +297,13 @@ suite "Persistence: write → restart → read-back":
     check "m5" in history
     # FIFO continues correctly after restart: adding m6 evicts m3, not a stale entry.
     let m6 = SdsMessage.init(
-      messageId = "m6", lamportTimestamp = 6, causalHistory = @[],
-      channelId = testChannel, content = @[6.byte],
-      bloomFilter = @[], senderId = "alice",
+      messageId = "m6",
+      lamportTimestamp = 6,
+      causalHistory = @[],
+      channelId = testChannel,
+      content = @[6.byte],
+      bloomFilter = @[],
+      senderId = "alice",
     )
     await rm2.addToHistory(m6, testChannel)
     check "m3" notin store.log[testChannel]
@@ -312,16 +318,22 @@ suite "Persistence: write → restart → read-back":
 
     # Receive c (deps on b), then b (deps on a). Both must buffer.
     let msgC = SdsMessage.init(
-      messageId = "c", lamportTimestamp = 30,
+      messageId = "c",
+      lamportTimestamp = 30,
       causalHistory = @[HistoryEntry.init("b", @[])],
-      channelId = testChannel, content = @[3.byte],
-      bloomFilter = @[], senderId = "carol",
+      channelId = testChannel,
+      content = @[3.byte],
+      bloomFilter = @[],
+      senderId = "carol",
     )
     let msgB = SdsMessage.init(
-      messageId = "b", lamportTimestamp = 20,
+      messageId = "b",
+      lamportTimestamp = 20,
       causalHistory = @[HistoryEntry.init("a", @[])],
-      channelId = testChannel, content = @[2.byte],
-      bloomFilter = @[], senderId = "bob",
+      channelId = testChannel,
+      content = @[2.byte],
+      bloomFilter = @[],
+      senderId = "bob",
     )
     discard await rm1.unwrapReceivedMessage(serializeMessage(msgC).get())
     discard await rm1.unwrapReceivedMessage(serializeMessage(msgB).get())
@@ -339,9 +351,13 @@ suite "Persistence: write → restart → read-back":
 
     # Now receive a (root) — should cascade-deliver a, b, c.
     let msgA = SdsMessage.init(
-      messageId = "a", lamportTimestamp = 10, causalHistory = @[],
-      channelId = testChannel, content = @[1.byte],
-      bloomFilter = @[], senderId = "alice",
+      messageId = "a",
+      lamportTimestamp = 10,
+      causalHistory = @[],
+      channelId = testChannel,
+      content = @[1.byte],
+      bloomFilter = @[],
+      senderId = "alice",
     )
     discard await rm2.unwrapReceivedMessage(serializeMessage(msgA).get())
     let history = rm2.channels[testChannel].messageHistory

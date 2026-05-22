@@ -69,7 +69,9 @@ proc process*(
     ).valueOr:
       return err("error processing UNWRAP_MESSAGE request: " & $error)
 
-    let res = SdsUnwrapResponse(message: unwrappedMessage, missingDeps: missingDeps, channelId: extractedChannelId)
+    let res = SdsUnwrapResponse(
+      message: unwrappedMessage, missingDeps: missingDeps, channelId: extractedChannelId
+    )
 
     # return the result as a json string
     var node = newJObject()

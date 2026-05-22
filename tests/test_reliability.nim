@@ -4,7 +4,8 @@ import ./async_unittest
 
 # Test-only convenience: implicit string → SdsParticipantID so test fixtures
 # can use string literals. Production code retains the distinct-type safety.
-converter toParticipantID(s: string): SdsParticipantID = s.SdsParticipantID
+converter toParticipantID(s: string): SdsParticipantID =
+  s.SdsParticipantID
 
 const testChannel = "testChannel"
 
@@ -139,7 +140,11 @@ suite "Reliability Mechanisms":
         messageReadyCount += 1,
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
         messageSentCount += 1,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
         missingDepsCount += 1,
     )
 
@@ -219,7 +224,11 @@ suite "Reliability Mechanisms":
         messageReadyCount += 1,
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
         discard,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
         missingDepsCount += 1,
     )
 
@@ -262,7 +271,11 @@ suite "Reliability Mechanisms":
         messageReadyCount += 1,
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
         messageSentCount += 1,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
         missingDepsCount += 1,
     )
 
@@ -306,7 +319,11 @@ suite "Reliability Mechanisms":
         messageReadyCount += 1,
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
         messageSentCount += 1,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
         discard,
     )
 
@@ -343,7 +360,11 @@ suite "Reliability Mechanisms":
         discard,
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
         messageSentCount += 1,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
         discard,
     )
 
@@ -389,7 +410,11 @@ suite "Reliability Mechanisms":
         discard,
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
         messageSentCount += 1,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
         discard,
     )
 
@@ -472,11 +497,15 @@ suite "Reliability Mechanisms":
         messageReadyCount += 1,
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
         messageSentCount += 1,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
         missingDepsCount += 1,
       nil,
       proc(messageId: SdsMessageID): seq[byte] =
-        return cast[seq[byte]]("hint:" & messageId)
+        return cast[seq[byte]]("hint:" & messageId),
     )
 
     # Send a first message to populate history
@@ -519,7 +548,8 @@ suite "Reliability Mechanisms":
     let msg4 = SdsMessage.init(
       messageId = "msg4",
       lamportTimestamp = 4,
-      causalHistory = @[newHistoryEntry("another-missing", cast[seq[byte]]("remote-hint"))],
+      causalHistory =
+        @[newHistoryEntry("another-missing", cast[seq[byte]]("remote-hint"))],
       channelId = testChannel,
       content = @[byte(4)],
       bloomFilter = @[],
@@ -555,7 +585,11 @@ suite "Periodic Tasks & Buffer Management":
         discard,
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
         messageSentCount += 1,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
         discard,
     )
 
@@ -610,7 +644,11 @@ suite "Periodic Tasks & Buffer Management":
         discard,
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
         messageSentCount += 1,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
         discard,
     )
 
@@ -647,7 +685,8 @@ suite "Periodic Tasks & Buffer Management":
         # Only msg2 and msg3 should be in buffer, msg1 should be removed after max retries
       finalBuffer[0].message.messageId == id2 # Verify it's the second message
       finalBuffer[0].resendAttempts == 0 # New message should have 0 attempts
-      not rm.channels[testChannel].bloomFilter.contains(id1) # Bloom filter cleaning check
+      not rm.channels[testChannel].bloomFilter.contains(id1)
+        # Bloom filter cleaning check
       rm.channels[testChannel].bloomFilter.contains(id3) # New message still in filter
 
     await rm.cleanup()
@@ -659,7 +698,11 @@ suite "Periodic Tasks & Buffer Management":
         discard,
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
         discard,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
         discard,
       proc() {.gcsafe.} =
         syncCallCount += 1,
@@ -725,7 +768,11 @@ suite "Special Cases Handling":
         messageReadyCount += 1,
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
         discard,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
         discard,
     )
 
@@ -911,8 +958,10 @@ suite "Multi-Channel ReliabilityManager Tests":
         readyMessageCount += 1,
       proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
         sentMessageCount += 1,
-      proc(messageId: SdsMessageID, deps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
-        missingDepsCount += 1
+      proc(
+          messageId: SdsMessageID, deps: seq[HistoryEntry], channelId: SdsChannelID
+      ) {.gcsafe.} =
+        missingDepsCount += 1,
     )
 
     let channel1 = "callback-channel-1"
@@ -960,9 +1009,9 @@ suite "Multi-Channel ReliabilityManager Tests":
     discard await rm.unwrapReceivedMessage(serializedAck2.get())
 
     check:
-      readyMessageCount == 2  # Both ack messages should trigger ready callbacks
-      sentMessageCount == 2  # Both original messages should be marked as sent
-      missingDepsCount == 0   # No missing dependencies
+      readyMessageCount == 2 # Both ack messages should trigger ready callbacks
+      sentMessageCount == 2 # Both original messages should be marked as sent
+      missingDepsCount == 0 # No missing dependencies
 
   asyncTest "channel-specific dependency management":
     let channel1 = "dep-channel-1"
@@ -1030,9 +1079,7 @@ suite "SDS-R: Repair Buffer Management":
   var rm: ReliabilityManager
 
   asyncSetup:
-    let rmResult = newReliabilityManager(
-      participantId = "test-participant"
-    )
+    let rmResult = newReliabilityManager(participantId = "test-participant")
     check rmResult.isOk()
     rm = rmResult.get()
     check (await rm.ensureChannel(testChannel)).isOk()
@@ -1045,9 +1092,15 @@ suite "SDS-R: Repair Buffer Management":
     var missingDepsCount = 0
 
     await rm.setCallbacks(
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} =
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
         missingDepsCount += 1,
     )
 
@@ -1073,9 +1126,16 @@ suite "SDS-R: Repair Buffer Management":
 
   asyncTest "receiving message clears it from repair buffers":
     await rm.setCallbacks(
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} = discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
+        discard,
     )
 
     # First, create the missing dep scenario
@@ -1104,9 +1164,16 @@ suite "SDS-R: Repair Buffer Management":
 
   asyncTest "markDependenciesMet clears repair buffers":
     await rm.setCallbacks(
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} = discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
+        discard,
     )
 
     let msg2 = SdsMessage.init(
@@ -1126,16 +1193,23 @@ suite "SDS-R: Repair Buffer Management":
 
   asyncTest "expired repair requests attached to outgoing messages":
     await rm.setCallbacks(
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} = discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
+        discard,
     )
 
     # Manually add an expired repair entry
     let channel = rm.channels[testChannel]
     channel.outgoingRepairBuffer["missing-msg"] = OutgoingRepairEntry(
       outHistEntry: HistoryEntry(messageId: "missing-msg", senderId: "orig-sender"),
-      minTimeRepairReq: getTime() - initDuration(seconds = 10),  # Already expired
+      minTimeRepairReq: getTime() - initDuration(seconds = 10), # Already expired
     )
 
     # Send a message — should pick up the expired repair request
@@ -1154,9 +1228,16 @@ suite "SDS-R: Repair Buffer Management":
     # eligible than maxRepairRequests, attach the ones with the smallest
     # minTimeRepairReq — i.e. the most overdue.
     await rm.setCallbacks(
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} = discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
+        discard,
     )
     let channel = rm.channels[testChannel]
     let now = getTime()
@@ -1188,9 +1269,16 @@ suite "SDS-R: Repair Buffer Management":
 
   asyncTest "incoming repair request adds to incoming repair buffer when eligible":
     await rm.setCallbacks(
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} = discard,
-      proc(messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID) {.gcsafe.} = discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
+        discard,
     )
 
     let channel = rm.channels[testChannel]
@@ -1214,10 +1302,13 @@ suite "SDS-R: Repair Buffer Management":
       channelId = testChannel,
       content = @[byte(3)],
       bloomFilter = @[],
-      repairRequest = @[HistoryEntry(
-        messageId: "cached-msg",
-        senderId: "test-participant",  # Same as our participantId so we're in response group
-      )],
+      repairRequest = @[
+        HistoryEntry(
+          messageId: "cached-msg",
+          senderId: "test-participant",
+            # Same as our participantId so we're in response group
+        )
+      ],
     )
     discard await rm.unwrapReceivedMessage(serializeMessage(msgWithRepair).get())
 
@@ -1230,7 +1321,9 @@ suite "SDS-R: Protobuf Roundtrip":
       messageId = "msg1",
       lamportTimestamp = 100,
       causalHistory = @[
-        HistoryEntry(messageId: "dep1", retrievalHint: @[byte(1), 2], senderId: "sender-A"),
+        HistoryEntry(
+          messageId: "dep1", retrievalHint: @[byte(1), 2], senderId: "sender-A"
+        ),
         HistoryEntry(messageId: "dep2", senderId: "sender-B"),
       ],
       channelId = "ch1",
@@ -1259,7 +1352,9 @@ suite "SDS-R: Protobuf Roundtrip":
       bloomFilter = @[],
       repairRequest = @[
         HistoryEntry(messageId: "missing1", senderId: "sender-X"),
-        HistoryEntry(messageId: "missing2", senderId: "sender-Y", retrievalHint: @[byte(5)]),
+        HistoryEntry(
+          messageId: "missing2", senderId: "sender-Y", retrievalHint: @[byte(5)]
+        ),
       ],
     )
 
@@ -1378,9 +1473,12 @@ suite "SDS-R: Lifecycle and State":
     check (await rm.ensureChannel(testChannel)).isOk()
 
     await rm.setCallbacks(
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} = discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} =
+        discard,
     )
 
     let msg = SdsMessage.init(
@@ -1409,9 +1507,12 @@ suite "SDS-R: Lifecycle and State":
     )
 
     await rm.setCallbacks(
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} = discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} =
+        discard,
     )
 
     let msg = SdsMessage.init(
@@ -1495,9 +1596,12 @@ suite "SDS-R: Lifecycle and State":
     check (await rm.ensureChannel("ch-B")).isOk()
 
     await rm.setCallbacks(
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} = discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} =
+        discard,
     )
 
     let msg = SdsMessage.init(
@@ -1522,9 +1626,12 @@ suite "SDS-R: Lifecycle and State":
     let channel = rm.channels[testChannel]
 
     await rm.setCallbacks(
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} = discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} =
+        discard,
     )
 
     # Carol already has M1 in history and has a pending incomingRepairBuffer entry
@@ -1571,26 +1678,30 @@ suite "SDS-R: Repair Sweep":
     var fireCount = 0
     var firstBytes: seq[byte] = @[]
     await rm.setCallbacks(
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} = discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} =
+        discard,
       onRepairReady = proc(bytes: seq[byte], ch: SdsChannelID) {.gcsafe.} =
         {.cast(gcsafe).}:
           fireCount += 1
           if fireCount == 1:
-            firstBytes = bytes,
+            firstBytes = bytes
+      ,
     )
 
     let channel = rm.channels[testChannel]
     channel.incomingRepairBuffer["m-ready"] = IncomingRepairEntry(
       inHistEntry: HistoryEntry(messageId: "m-ready", senderId: "alice"),
       cachedMessage: @[byte(1), 2, 3],
-      minTimeRepairResp: getTime() - initDuration(seconds = 1),  # expired
+      minTimeRepairResp: getTime() - initDuration(seconds = 1), # expired
     )
     channel.incomingRepairBuffer["m-not-ready"] = IncomingRepairEntry(
       inHistEntry: HistoryEntry(messageId: "m-not-ready", senderId: "alice"),
       cachedMessage: @[byte(9), 9, 9],
-      minTimeRepairResp: getTime() + initDuration(minutes = 10),  # far future
+      minTimeRepairResp: getTime() + initDuration(minutes = 10), # far future
     )
 
     await rm.runRepairSweep()
@@ -1603,16 +1714,19 @@ suite "SDS-R: Repair Sweep":
 
   asyncTest "runRepairSweep drops outgoing entries past T_max window":
     await rm.setCallbacks(
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} = discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} =
+        discard,
     )
 
     let channel = rm.channels[testChannel]
     let tMax = rm.config.repairTMax
     channel.outgoingRepairBuffer["m-stale"] = OutgoingRepairEntry(
       outHistEntry: HistoryEntry(messageId: "m-stale", senderId: "alice"),
-      minTimeRepairReq: getTime() - (tMax + tMax),  # now - 2*T_max, past drop window
+      minTimeRepairReq: getTime() - (tMax + tMax), # now - 2*T_max, past drop window
     )
     channel.outgoingRepairBuffer["m-fresh"] = OutgoingRepairEntry(
       outHistEntry: HistoryEntry(messageId: "m-fresh", senderId: "alice"),
@@ -1628,9 +1742,12 @@ suite "SDS-R: Repair Sweep":
   asyncTest "runRepairSweep no-op when buffers are empty":
     var fireCount = 0
     await rm.setCallbacks(
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} = discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} =
+        discard,
       onRepairReady = proc(bytes: seq[byte], ch: SdsChannelID) {.gcsafe.} =
         fireCount += 1,
     )
@@ -1639,15 +1756,14 @@ suite "SDS-R: Repair Sweep":
 
 # --- Multi-participant in-process bus for integration tests ---------------
 
-type
-  TestBus = ref object
-    peers: OrderedTable[SdsParticipantID, ReliabilityManager]
-    delivered: Table[SdsParticipantID, seq[SdsMessageID]]
-    # Log of raw message-ids placed on the wire, tagged with the source peer.
-    wireLog: seq[tuple[senderId: SdsParticipantID, messageId: SdsMessageID]]
-    # Queue of (sender, bytes) the repair callback would have delivered if it
-    # could await. Drained explicitly by `bus.drain()` from the test body.
-    pending: seq[(SdsParticipantID, seq[byte])]
+type TestBus = ref object
+  peers: OrderedTable[SdsParticipantID, ReliabilityManager]
+  delivered: Table[SdsParticipantID, seq[SdsMessageID]]
+  # Log of raw message-ids placed on the wire, tagged with the source peer.
+  wireLog: seq[tuple[senderId: SdsParticipantID, messageId: SdsMessageID]]
+  # Queue of (sender, bytes) the repair callback would have delivered if it
+  # could await. Drained explicitly by `bus.drain()` from the test body.
+  pending: seq[(SdsParticipantID, seq[byte])]
 
 proc newTestBus(): TestBus =
   TestBus(
@@ -1667,7 +1783,7 @@ proc deliverExcept(
     senderId: SdsParticipantID,
     bytes: seq[byte],
     exclude: seq[SdsParticipantID],
-): Future[void] {.async: (raises: [CancelledError]), gcsafe.} =
+) {.async: (raises: [CancelledError]).} =
   for pid, peer in bus.peers:
     if pid == senderId or pid in exclude:
       continue
@@ -1699,8 +1815,10 @@ proc addPeer(
     proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
       {.cast(gcsafe).}:
         busRef.delivered[pid].add(msgId),
-    proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} = discard,
-    proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} = discard,
+    proc(msgId: SdsMessageID, ch: SdsChannelID) {.gcsafe.} =
+      discard,
+    proc(msgId: SdsMessageID, deps: seq[HistoryEntry], ch: SdsChannelID) {.gcsafe.} =
+      discard,
     onRepairReady = proc(bytes: seq[byte], ch: SdsChannelID) {.gcsafe.} =
       # The callback contract is sync, so we cannot `await` here. Enqueue the
       # delivery and let the test drive it via `bus.drain()` instead.
@@ -1723,9 +1841,7 @@ proc broadcast(
   bus.recordWire(senderId, wrapped.get())
   await bus.deliverExcept(senderId, wrapped.get(), dropAt)
 
-proc forceOutgoingExpired(
-    rm: ReliabilityManager, messageId: SdsMessageID
-) =
+proc forceOutgoingExpired(rm: ReliabilityManager, messageId: SdsMessageID) =
   ## Push a specific outgoingRepairBuffer entry's minTimeRepairReq into the past so the
   ## next wrapOutgoingMessage will pick it up.
   let channel = rm.channels[testChannel]
@@ -1733,9 +1849,7 @@ proc forceOutgoingExpired(
     channel.outgoingRepairBuffer[messageId].minTimeRepairReq =
       getTime() - initDuration(seconds = 1)
 
-proc forceIncomingExpired(
-    rm: ReliabilityManager, messageId: SdsMessageID
-) =
+proc forceIncomingExpired(rm: ReliabilityManager, messageId: SdsMessageID) =
   ## Push an incomingRepairBuffer entry's minTimeRepairResp into the past so runRepairSweep fires it.
   let channel = rm.channels[testChannel]
   if messageId in channel.incomingRepairBuffer:
@@ -1743,7 +1857,6 @@ proc forceIncomingExpired(
       getTime() - initDuration(seconds = 1)
 
 suite "SDS-R: Multi-Participant Integration":
-
   asyncTest "basic single-gap repair (Alice -> Bob misses -> Carol's message triggers repair)":
     let bus = newTestBus()
     let alice = await bus.addPeer("alice")
@@ -1825,7 +1938,7 @@ suite "SDS-R: Multi-Participant Integration":
     var m1RebroadcastCount = 0
     for entry in bus.wireLog:
       if entry.messageId == "m1" and entry.senderId != "alice":
-        discard  # only the original Alice->all broadcast had senderId ="alice"
+        discard # only the original Alice->all broadcast had senderId ="alice"
       if entry.messageId == "m1":
         m1RebroadcastCount += 1
     # Two "m1" entries total on wire: (1) Alice's original broadcast, (2) Alice's rebroadcast.
@@ -1839,7 +1952,9 @@ suite "SDS-R: Multi-Participant Integration":
 
     # Alice sends M1 — drop at both Bob and Carol, so both miss it.
     await bus.broadcast(
-      "alice", @[byte(1)], "m1",
+      "alice",
+      @[byte(1)],
+      "m1",
       dropAt = @["bob".SdsParticipantID, "carol".SdsParticipantID],
     )
     # Alice sends M2 referencing M1 — both Bob and Carol see M1 missing.
@@ -1930,7 +2045,8 @@ suite "SDS-R: Multi-Participant Integration":
     for id in ["m1", "m2", "m3", "m4", "m5"]:
       bob.forceOutgoingExpired(id)
 
-    let wrapped = (await bob.wrapOutgoingMessage(@[byte(99)], "bob-msg-1", testChannel)).get()
+    let wrapped =
+      (await bob.wrapOutgoingMessage(@[byte(99)], "bob-msg-1", testChannel)).get()
     let decoded = deserializeMessage(wrapped).get()
     check decoded.repairRequest.len <= bob.config.maxRepairRequests
 
