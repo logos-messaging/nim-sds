@@ -118,7 +118,7 @@ proc noOpPersistence*(): Persistence =
   Persistence(
     saveLamport: proc(
         channelId: SdsChannelID, lamport: int64
-    ): Future[void] {.async: (raises: []), gcsafe.} =
+    ): Future[void] {.async: (raises: []).} =
       discard,
     appendLogEntry: proc(
         channelId: SdsChannelID, msg: SdsMessage
