@@ -56,7 +56,7 @@ proc cleanup*(
 
 proc cleanBloomFilter*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[void] {.async: (raises: []), gcsafe.} =
+): Future[void] {.async: (raises: [CancelledError]), gcsafe.} =
   try:
     await rm.lock.acquire()
     try:
@@ -64,6 +64,8 @@ proc cleanBloomFilter*(
         rm.channels[channelId].bloomFilter.clean()
     finally:
       rm.lock.release()
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Failed to clean bloom filter",
       error = getCurrentExceptionMsg(), channelId = channelId
@@ -215,7 +217,7 @@ proc checkDependencies*(
 
 proc getMessageHistory*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[seq[SdsMessageID]] {.async: (raises: []), gcsafe.} =
+): Future[seq[SdsMessageID]] {.async: (raises: [CancelledError]), gcsafe.} =
   try:
     await rm.lock.acquire()
     try:
@@ -228,6 +230,8 @@ proc getMessageHistory*(
         return @[]
     finally:
       rm.lock.release()
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Failed to get message history",
       channelId = channelId, error = getCurrentExceptionMsg()
@@ -235,7 +239,7 @@ proc getMessageHistory*(
 
 proc getOutgoingBuffer*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[seq[UnacknowledgedMessage]] {.async: (raises: []), gcsafe.} =
+): Future[seq[UnacknowledgedMessage]] {.async: (raises: [CancelledError]), gcsafe.} =
   try:
     await rm.lock.acquire()
     try:
@@ -245,6 +249,8 @@ proc getOutgoingBuffer*(
         return @[]
     finally:
       rm.lock.release()
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Failed to get outgoing buffer",
       channelId = channelId, error = getCurrentExceptionMsg()
@@ -252,7 +258,9 @@ proc getOutgoingBuffer*(
 
 proc getIncomingBuffer*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[Table[SdsMessageID, IncomingMessage]] {.async: (raises: []), gcsafe.} =
+): Future[Table[SdsMessageID, IncomingMessage]] {.
+    async: (raises: [CancelledError]), gcsafe
+.} =
   try:
     await rm.lock.acquire()
     try:
@@ -262,6 +270,8 @@ proc getIncomingBuffer*(
         return initTable[SdsMessageID, IncomingMessage]()
     finally:
       rm.lock.release()
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Failed to get incoming buffer",
       channelId = channelId, error = getCurrentExceptionMsg()
@@ -301,19 +311,23 @@ proc getOrCreateChannel*(
 
 proc ensureChannel*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[Result[void, ReliabilityError]] {.async: (raises: []), gcsafe.} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: [CancelledError]), gcsafe.} =
   try:
     await rm.lock.acquire()
     try:
       try:
         discard await rm.getOrCreateChannel(channelId)
         return ok()
+      except CancelledError as e:
+        raise e
       except CatchableError:
         error "Failed to ensure channel",
           channelId = channelId, msg = getCurrentExceptionMsg()
         return err(ReliabilityError.reInternalError)
     finally:
       rm.lock.release()
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Failed to ensure channel (lock)",
       channelId = channelId, msg = getCurrentExceptionMsg()
@@ -321,7 +335,7 @@ proc ensureChannel*(
 
 proc removeChannel*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[Result[void, ReliabilityError]] {.async: (raises: []), gcsafe.} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: [CancelledError]), gcsafe.} =
   try:
     await rm.lock.acquire()
     try:
@@ -342,6 +356,8 @@ proc removeChannel*(
         return err(ReliabilityError.reInternalError)
     finally:
       rm.lock.release()
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Failed to remove channel (lock)",
       channelId = channelId, msg = getCurrentExceptionMsg()

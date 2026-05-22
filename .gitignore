@@ -1,11 +1,9 @@
 .DS_Store
-tests/test_reliability
-tests/bloom
 nph
 docs
 for_reference
 do_not_commit
-build/*
+/build/
 result
 sds.nims
 /.update.timestamp

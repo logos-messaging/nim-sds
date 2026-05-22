@@ -85,7 +85,9 @@ proc wrapOutgoingMessage*(
     message: seq[byte],
     messageId: SdsMessageID,
     channelId: SdsChannelID,
-): Future[Result[seq[byte], ReliabilityError]] {.async: (raises: []), gcsafe.} =
+): Future[Result[seq[byte], ReliabilityError]] {.
+    async: (raises: [CancelledError]), gcsafe
+.} =
   ## Wraps an outgoing message with reliability metadata.
   if message.len == 0:
     return err(ReliabilityError.reInvalidArgument)
@@ -156,6 +158,8 @@ proc wrapOutgoingMessage*(
         return err(ReliabilityError.reSerializationError)
     finally:
       rm.lock.release()
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Failed to wrap message (lock)",
       channelId = channelId, msg = getCurrentExceptionMsg()
@@ -219,7 +223,7 @@ proc unwrapReceivedMessage*(
 ): Future[Result[
     tuple[message: seq[byte], missingDeps: seq[HistoryEntry], channelId: SdsChannelID],
     ReliabilityError,
-]] {.async: (raises: []), gcsafe.} =
+]] {.async: (raises: [CancelledError]), gcsafe.} =
   ## Unwraps a received message and processes its reliability metadata.
   try:
     let channelId = extractChannelId(message).valueOr:
@@ -330,13 +334,15 @@ proc unwrapReceivedMessage*(
             await rm.persistence.saveOutgoingRepair(channelId, dep.messageId, outEntry)
 
     return ok((msg.content, missingDeps, channelId))
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Failed to unwrap message", msg = getCurrentExceptionMsg()
     return err(ReliabilityError.reDeserializationError)
 
 proc markDependenciesMet*(
     rm: ReliabilityManager, messageIds: seq[SdsMessageID], channelId: SdsChannelID
-): Future[Result[void, ReliabilityError]] {.async: (raises: []), gcsafe.} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: [CancelledError]), gcsafe.} =
   ## Marks the specified message dependencies as met.
   try:
     if channelId notin rm.channels:
@@ -364,6 +370,8 @@ proc markDependenciesMet*(
 
     await rm.processIncomingBuffer(channelId)
     return ok()
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Failed to mark dependencies as met",
       channelId = channelId, msg = getCurrentExceptionMsg()
@@ -377,7 +385,7 @@ proc setCallbacks*(
     onPeriodicSync: PeriodicSyncCallback = nil,
     onRetrievalHint: RetrievalHintProvider = nil,
     onRepairReady: RepairReadyCallback = nil,
-): Future[void] {.async: (raises: []), gcsafe.} =
+): Future[void] {.async: (raises: [CancelledError]), gcsafe.} =
   ## Sets the callback functions for various events in the ReliabilityManager.
   try:
     await rm.lock.acquire()
@@ -390,12 +398,14 @@ proc setCallbacks*(
       rm.onRepairReady = onRepairReady
     finally:
       rm.lock.release()
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Failed to set callbacks", msg = getCurrentExceptionMsg()
 
 proc checkUnacknowledgedMessages(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[void] {.async: (raises: []), gcsafe.} =
+): Future[void] {.async: (raises: [CancelledError]), gcsafe.} =
   try:
     await rm.lock.acquire()
     try:
@@ -427,6 +437,8 @@ proc checkUnacknowledgedMessages(
       channel.outgoingBuffer = newOutgoingBuffer
     finally:
       rm.lock.release()
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Failed to check unacknowledged messages",
       channelId = channelId, msg = getCurrentExceptionMsg()
@@ -460,7 +472,7 @@ proc periodicSyncMessage(
 
 proc runRepairSweep*(
     rm: ReliabilityManager
-): Future[void] {.async: (raises: []), gcsafe.} =
+): Future[void] {.async: (raises: [CancelledError]), gcsafe.} =
   ## SDS-R: Runs a single pass of the repair sweep.
   ## - Incoming: fires onRepairReady for expired T_resp entries and removes them
   ## - Outgoing: drops entries past T_max window
@@ -501,6 +513,8 @@ proc runRepairSweep*(
             channelId = channelId, msg = getCurrentExceptionMsg()
     finally:
       rm.lock.release()
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Error in repair sweep", msg = getCurrentExceptionMsg()
 
@@ -523,7 +537,7 @@ proc startPeriodicTasks*(rm: ReliabilityManager) =
 
 proc resetReliabilityManager*(
     rm: ReliabilityManager
-): Future[Result[void, ReliabilityError]] {.async: (raises: []), gcsafe.} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: [CancelledError]), gcsafe.} =
   ## Resets the ReliabilityManager to its initial state.
   try:
     await rm.lock.acquire()
@@ -547,6 +561,8 @@ proc resetReliabilityManager*(
         return err(ReliabilityError.reInternalError)
     finally:
       rm.lock.release()
+  except CancelledError as e:
+    raise e
   except CatchableError:
     error "Failed to reset ReliabilityManager (lock)", msg = getCurrentExceptionMsg()
     return err(ReliabilityError.reInternalError)
