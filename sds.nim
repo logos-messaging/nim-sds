@@ -35,7 +35,7 @@ proc isAcknowledged*(
 
 proc reviewAckStatus(
     rm: ReliabilityManager, msg: SdsMessage
-): Future[void] {.async: (raises: []), gcsafe.} =
+): Future[void] {.async: (raises: [CatchableError]), gcsafe.} =
   try:
     var rbf: Option[RollingBloomFilter]
     if msg.bloomFilter.len > 0:
@@ -76,8 +76,9 @@ proc reviewAckStatus(
       let (idx, ackedId) = toDelete[k]
       channel.outgoingBuffer.delete(idx)
       await rm.persistence.removeOutgoing(msg.channelId, ackedId)
-  except CatchableError:
+  except CatchableError as e:
     error "Failed to review ack status", msg = getCurrentExceptionMsg()
+    raise e
 
 proc wrapOutgoingMessage*(
     rm: ReliabilityManager,
@@ -162,7 +163,7 @@ proc wrapOutgoingMessage*(
 
 proc processIncomingBuffer(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[void] {.async: (raises: []), gcsafe.} =
+): Future[void] {.async: (raises: [CatchableError]), gcsafe.} =
   try:
     await rm.lock.acquire()
     try:
@@ -208,9 +209,10 @@ proc processIncomingBuffer(
         await rm.persistence.removeIncoming(channelId, msgId)
     finally:
       rm.lock.release()
-  except CatchableError:
+  except CatchableError as e:
     error "Failed to process incoming buffer",
       channelId = channelId, msg = getCurrentExceptionMsg()
+    raise e
 
 proc unwrapReceivedMessage*(
     rm: ReliabilityManager, message: seq[byte]
