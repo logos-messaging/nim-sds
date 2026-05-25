@@ -1783,7 +1783,7 @@ proc deliverExcept(
     senderId: SdsParticipantID,
     bytes: seq[byte],
     exclude: seq[SdsParticipantID],
-) {.async: (raises: [CancelledError]).} =
+) {.async: (raises: []).} =
   for pid, peer in bus.peers:
     if pid == senderId or pid in exclude:
       continue
