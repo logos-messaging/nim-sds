@@ -34,7 +34,7 @@ suite "Persistence: write → restart → read-back":
     let p1 = newInMemoryPersistence(store)
     let rm1 = newReliabilityManager(participantId = "alice", persistence = p1).get()
     check (await rm1.ensureChannel(testChannel)).isOk()
-    await rm1.updateLamportTimestamp(42, testChannel)
+    check (await rm1.updateLamportTimestamp(42, testChannel)).isOk()
     check store.lamports[testChannel] == 43 # max(42, 0) + 1
     await rm1.cleanup()
 
@@ -57,7 +57,7 @@ suite "Persistence: write → restart → read-back":
       bloomFilter = @[],
       senderId = "alice",
     )
-    await rm1.addToHistory(msg, testChannel)
+    check (await rm1.addToHistory(msg, testChannel)).isOk()
     check store.log[testChannel].len == 1
     await rm1.cleanup()
 
@@ -276,7 +276,7 @@ suite "Persistence: write → restart → read-back":
         bloomFilter = @[],
         senderId = "alice",
       )
-      await rm1.addToHistory(m, testChannel)
+      check (await rm1.addToHistory(m, testChannel)).isOk()
     check store.log[testChannel].len == 3
     check "m1" notin store.log[testChannel]
     check "m2" notin store.log[testChannel]
@@ -305,7 +305,7 @@ suite "Persistence: write → restart → read-back":
       bloomFilter = @[],
       senderId = "alice",
     )
-    await rm2.addToHistory(m6, testChannel)
+    check (await rm2.addToHistory(m6, testChannel)).isOk()
     check "m3" notin store.log[testChannel]
     check "m6" in store.log[testChannel]
     await rm2.cleanup()
@@ -368,3 +368,40 @@ suite "Persistence: write → restart → read-back":
     let inbufFinal = await rm2.getIncomingBuffer(testChannel)
     check inbufFinal.len == 0
     await rm2.cleanup()
+
+suite "Persistence: error propagation":
+  asyncTest "loadAllForChannel failure surfaces as rePersistenceError":
+    let store = newInMemoryStore()
+    store.failingOps.incl("loadAllForChannel")
+    let rm = newReliabilityManager(
+        participantId = "alice", persistence = newInMemoryPersistence(store)
+      )
+      .get()
+    let res = await rm.ensureChannel(testChannel)
+    check res.isErr()
+    check res.error == ReliabilityError.rePersistenceError
+
+  asyncTest "write failure during send surfaces as rePersistenceError":
+    let store = newInMemoryStore()
+    let rm = newReliabilityManager(
+        participantId = "alice", persistence = newInMemoryPersistence(store)
+      )
+      .get()
+    check (await rm.ensureChannel(testChannel)).isOk()
+    # Make the outgoing-buffer write fail; wrapOutgoingMessage must not swallow it.
+    store.failingOps.incl("saveOutgoing")
+    let res = await rm.wrapOutgoingMessage(@[byte(1)], "m1", testChannel)
+    check res.isErr()
+    check res.error == ReliabilityError.rePersistenceError
+
+  asyncTest "dropChannel failure during removeChannel surfaces as rePersistenceError":
+    let store = newInMemoryStore()
+    let rm = newReliabilityManager(
+        participantId = "alice", persistence = newInMemoryPersistence(store)
+      )
+      .get()
+    check (await rm.ensureChannel(testChannel)).isOk()
+    store.failingOps.incl("dropChannel")
+    let res = await rm.removeChannel(testChannel)
+    check res.isErr()
+    check res.error == ReliabilityError.rePersistenceError

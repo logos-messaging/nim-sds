@@ -1550,7 +1550,7 @@ suite "SDS-R: Lifecycle and State":
 
     discard await rm.wrapOutgoingMessage(@[byte(1)], "m1", testChannel)
     discard await rm.wrapOutgoingMessage(@[byte(2)], "m2", testChannel)
-    let entries = await rm.getRecentHistoryEntries(10, testChannel)
+    let entries = (await rm.getRecentHistoryEntries(10, testChannel)).get()
     check:
       entries.len == 2
       entries[0].senderId == "alice"
@@ -1704,7 +1704,7 @@ suite "SDS-R: Repair Sweep":
       minTimeRepairResp: getTime() + initDuration(minutes = 10), # far future
     )
 
-    await rm.runRepairSweep()
+    check (await rm.runRepairSweep()).isOk()
 
     check:
       fireCount == 1
@@ -1733,7 +1733,7 @@ suite "SDS-R: Repair Sweep":
       minTimeRepairReq: getTime(),
     )
 
-    await rm.runRepairSweep()
+    check (await rm.runRepairSweep()).isOk()
 
     check:
       "m-stale" notin channel.outgoingRepairBuffer
@@ -1751,7 +1751,7 @@ suite "SDS-R: Repair Sweep":
       onRepairReady = proc(bytes: seq[byte], ch: SdsChannelID) {.gcsafe.} =
         fireCount += 1,
     )
-    await rm.runRepairSweep()
+    check (await rm.runRepairSweep()).isOk()
     check fireCount == 0
 
 # --- Multi-participant in-process bus for integration tests ---------------
@@ -1890,7 +1890,7 @@ suite "SDS-R: Multi-Participant Integration":
     # Force alice's tResp to past just to be safe (it's already 0 for self),
     # then run her sweep. She rebroadcasts M1.
     alice.forceIncomingExpired("m1")
-    await alice.runRepairSweep()
+    check (await alice.runRepairSweep()).isOk()
     await bus.drain()
 
     # Bob now has M1 and M2 delivered.
@@ -1922,7 +1922,7 @@ suite "SDS-R: Multi-Participant Integration":
     # Alice fires first (T_resp =0 for self). Her rebroadcast should cancel Carol's
     # pending entry when Carol receives the rebroadcast.
     alice.forceIncomingExpired("m1")
-    await alice.runRepairSweep()
+    check (await alice.runRepairSweep()).isOk()
     await bus.drain()
 
     # Carol's pending response must have been cleared by the dedup-path cleanup.
@@ -1930,7 +1930,7 @@ suite "SDS-R: Multi-Participant Integration":
 
     # Even if we now force-run Carol's sweep, nothing should fire.
     let wireCountBefore = bus.wireLog.len
-    await carol.runRepairSweep()
+    check (await carol.runRepairSweep()).isOk()
     await bus.drain()
     check bus.wireLog.len == wireCountBefore
 

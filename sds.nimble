@@ -1,7 +1,7 @@
 import strutils, os
 
 # Package
-version = "0.2.4"
+version = "0.3.0"
 author = "Logos Messaging Team"
 description = "E2E Scalable Data Sync API"
 license = "MIT"

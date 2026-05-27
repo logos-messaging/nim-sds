@@ -15,13 +15,24 @@ export
 proc defaultConfig*(): ReliabilityConfig =
   return ReliabilityConfig.init()
 
+proc reliabilityErr*(detail: string): ReliabilityError {.gcsafe, raises: [].} =
+  ## Maps a backend-supplied persistence error string onto the
+  ## `rePersistenceError` enum value. The enum carries no payload, so the
+  ## original detail is logged here — this is the single point where a
+  ## persistence failure is recorded, while the enum value travels up the
+  ## `Result` chain to the public API caller, who decides what to do.
+  warn "persistence operation failed", detail = detail
+  ReliabilityError.rePersistenceError
+
 proc dropChannelFromPersistence*(
     rm: ReliabilityManager, channelId: SdsChannelID
-) {.async: (raises: []).} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: []).} =
   ## Wipes all persisted state for a channel via a single backend call.
   ## Called by removeChannel / resetReliabilityManager before they clear
   ## in-memory state. Backend executes the wipe in one transaction.
-  await rm.persistence.dropChannel(channelId)
+  (await rm.persistence.dropChannel(channelId)).isOkOr:
+    return err(reliabilityErr(error))
+  ok()
 
 proc cleanup*(rm: ReliabilityManager) {.async: (raises: []).} =
   ## Releases in-memory state. Does NOT wipe persistence — the manager may be
@@ -69,7 +80,7 @@ proc cleanBloomFilter*(
 
 proc addToHistory*(
     rm: ReliabilityManager, msg: SdsMessage, channelId: SdsChannelID
-) {.async: (raises: []).} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: []).} =
   ## Inserts a delivered message into the channel's history map and evicts the
   ## eldest entries when the bound is exceeded. The full SdsMessage is kept so
   ## senderId is available for downstream causal-history population and the
@@ -78,29 +89,36 @@ proc addToHistory*(
     if channelId in rm.channels:
       let channel = rm.channels[channelId]
       channel.messageHistory[msg.messageId] = msg
-      await rm.persistence.appendLogEntry(channelId, msg)
+      (await rm.persistence.appendLogEntry(channelId, msg)).isOkOr:
+        return err(reliabilityErr(error))
       while channel.messageHistory.len > rm.config.maxMessageHistory:
         var firstKey: SdsMessageID
         for k in channel.messageHistory.keys:
           firstKey = k
           break
         channel.messageHistory.del(firstKey)
-        await rm.persistence.removeLogEntry(channelId, firstKey)
+        (await rm.persistence.removeLogEntry(channelId, firstKey)).isOkOr:
+          return err(reliabilityErr(error))
+    ok()
   except CatchableError:
     error "Failed to add to history",
       channelId = channelId, msgId = msg.messageId, error = getCurrentExceptionMsg()
+    err(ReliabilityError.reInternalError)
 
 proc updateLamportTimestamp*(
     rm: ReliabilityManager, msgTs: int64, channelId: SdsChannelID
-) {.async: (raises: []).} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: []).} =
   try:
     if channelId in rm.channels:
       let channel = rm.channels[channelId]
       channel.lamportTimestamp = max(msgTs, channel.lamportTimestamp) + 1
-      await rm.persistence.saveLamport(channelId, channel.lamportTimestamp)
+      (await rm.persistence.saveLamport(channelId, channel.lamportTimestamp)).isOkOr:
+        return err(reliabilityErr(error))
+    ok()
   except CatchableError:
     error "Failed to update lamport timestamp",
       channelId = channelId, msgTs = msgTs, error = getCurrentExceptionMsg()
+    err(ReliabilityError.reInternalError)
 
 proc newHistoryEntry*(
     messageId: SdsMessageID, retrievalHint: seq[byte] = @[]
@@ -167,7 +185,7 @@ proc isInResponseGroup*(
 
 proc getRecentHistoryEntries*(
     rm: ReliabilityManager, n: int, channelId: SdsChannelID
-): Future[seq[HistoryEntry]] {.async: (raises: []).} =
+): Future[Result[seq[HistoryEntry], ReliabilityError]] {.async: (raises: []).} =
   ## Get recent history entries for sending in causal history.
   ## Populates retrieval hints and senderId (SDS-R) for each entry.
   try:
@@ -184,16 +202,17 @@ proc getRecentHistoryEntries*(
           {.cast(raises: []).}:
             entry.retrievalHint = rm.onRetrievalHint(msgId)
           if entry.retrievalHint.len > 0:
-            await rm.persistence.setRetrievalHint(msgId, entry.retrievalHint)
+            (await rm.persistence.setRetrievalHint(msgId, entry.retrievalHint)).isOkOr:
+              return err(reliabilityErr(error))
         entry.senderId = channel.messageHistory[msgId].senderId
         entries.add(entry)
-      return entries
+      ok(entries)
     else:
-      return @[]
+      ok(newSeq[HistoryEntry]())
   except CatchableError:
     error "Failed to get recent history entries",
       channelId = channelId, n = n, error = getCurrentExceptionMsg()
-    return @[]
+    err(ReliabilityError.reInternalError)
 
 proc checkDependencies*(
     rm: ReliabilityManager, deps: seq[HistoryEntry], channelId: SdsChannelID
@@ -269,7 +288,7 @@ proc getIncomingBuffer*(
 
 proc getOrCreateChannel*(
     rm: ReliabilityManager, channelId: SdsChannelID
-): Future[ChannelContext] {.async: (raises: [CatchableError]).} =
+): Future[Result[ChannelContext, ReliabilityError]] {.async: (raises: []).} =
   ## Returns the channel context, creating and bootstrapping it from the
   ## persistence backend if it does not yet exist in memory. The bloom filter
   ## is rebuilt deterministically from the loaded message history rather than
@@ -281,7 +300,8 @@ proc getOrCreateChannel*(
           rm.config.bloomFilterCapacity, rm.config.bloomFilterErrorRate
         )
       )
-      let snapshot = await rm.persistence.loadAllForChannel(channelId)
+      let snapshot = (await rm.persistence.loadAllForChannel(channelId)).valueOr:
+        return err(reliabilityErr(error))
       channel.lamportTimestamp = snapshot.lamportTimestamp
       for msg in snapshot.messageHistory:
         channel.messageHistory[msg.messageId] = msg
@@ -295,11 +315,11 @@ proc getOrCreateChannel*(
       for (msgId, entry) in snapshot.incomingRepairBuffer:
         channel.incomingRepairBuffer[msgId] = entry
       rm.channels[channelId] = channel
-    return rm.channels[channelId]
-  except CatchableError as e:
+    ok(rm.channels[channelId])
+  except CatchableError:
     error "Failed to get or create channel",
       channelId = channelId, error = getCurrentExceptionMsg()
-    raise e
+    err(ReliabilityError.reInternalError)
 
 proc ensureChannel*(
     rm: ReliabilityManager, channelId: SdsChannelID
@@ -307,13 +327,9 @@ proc ensureChannel*(
   try:
     await rm.lock.acquire()
     try:
-      try:
-        discard await rm.getOrCreateChannel(channelId)
-        return ok()
-      except CatchableError:
-        error "Failed to ensure channel",
-          channelId = channelId, msg = getCurrentExceptionMsg()
-        return err(ReliabilityError.reInternalError)
+      (await rm.getOrCreateChannel(channelId)).isOkOr:
+        return err(error)
+      return ok()
     finally:
       rm.lock.release()
   except CatchableError:
@@ -330,7 +346,8 @@ proc removeChannel*(
       try:
         if channelId in rm.channels:
           let channel = rm.channels[channelId]
-          await rm.dropChannelFromPersistence(channelId)
+          (await rm.dropChannelFromPersistence(channelId)).isOkOr:
+            return err(error)
           channel.outgoingBuffer.setLen(0)
           channel.incomingBuffer.clear()
           channel.messageHistory.clear()

@@ -35,7 +35,7 @@ proc isAcknowledged*(
 
 proc reviewAckStatus(
     rm: ReliabilityManager, msg: SdsMessage
-) {.async: (raises: [CatchableError]).} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: []).} =
   try:
     var rbf: Option[RollingBloomFilter]
     if msg.bloomFilter.len > 0:
@@ -59,7 +59,7 @@ proc reviewAckStatus(
       rbf = none[RollingBloomFilter]()
 
     if msg.channelId notin rm.channels:
-      return
+      return ok()
 
     let channel = rm.channels[msg.channelId]
     var toDelete: seq[(int, SdsMessageID)] = @[]
@@ -77,10 +77,12 @@ proc reviewAckStatus(
     for k in countdown(toDelete.high, 0):
       let (idx, ackedId) = toDelete[k]
       channel.outgoingBuffer.delete(idx)
-      await rm.persistence.removeOutgoing(msg.channelId, ackedId)
-  except CatchableError as e:
+      (await rm.persistence.removeOutgoing(msg.channelId, ackedId)).isOkOr:
+        return err(reliabilityErr(error))
+    ok()
+  except CatchableError:
     error "Failed to review ack status", msg = getCurrentExceptionMsg()
-    raise e
+    err(ReliabilityError.reInternalError)
 
 proc wrapOutgoingMessage*(
     rm: ReliabilityManager,
@@ -98,8 +100,10 @@ proc wrapOutgoingMessage*(
     await rm.lock.acquire()
     try:
       try:
-        let channel = await rm.getOrCreateChannel(channelId)
-        await rm.updateLamportTimestamp(getTime().toUnix, channelId)
+        let channel = (await rm.getOrCreateChannel(channelId)).valueOr:
+          return err(error)
+        (await rm.updateLamportTimestamp(getTime().toUnix, channelId)).isOkOr:
+          return err(error)
 
         let bfResult = serializeBloomFilter(channel.bloomFilter.filter)
         if bfResult.isErr:
@@ -125,13 +129,17 @@ proc wrapOutgoingMessage*(
           expiredKeys.add(eligible[i][0])
         for key in expiredKeys:
           channel.outgoingRepairBuffer.del(key)
-          await rm.persistence.removeOutgoingRepair(channelId, key)
+          (await rm.persistence.removeOutgoingRepair(channelId, key)).isOkOr:
+            return err(reliabilityErr(error))
 
+        let causalHistory = (
+          await rm.getRecentHistoryEntries(rm.config.maxCausalHistory, channelId)
+        ).valueOr:
+          return err(error)
         let msg = SdsMessage.init(
           messageId = messageId,
           lamportTimestamp = channel.lamportTimestamp,
-          causalHistory =
-            await rm.getRecentHistoryEntries(rm.config.maxCausalHistory, channelId),
+          causalHistory = causalHistory,
           channelId = channelId,
           content = message,
           bloomFilter = bfResult.get(),
@@ -143,13 +151,15 @@ proc wrapOutgoingMessage*(
           message = msg, sendTime = getTime(), resendAttempts = 0
         )
         channel.outgoingBuffer.add(unackMsg)
-        await rm.persistence.saveOutgoing(channelId, unackMsg)
+        (await rm.persistence.saveOutgoing(channelId, unackMsg)).isOkOr:
+          return err(reliabilityErr(error))
 
         channel.bloomFilter.add(msg.messageId)
         # The full SdsMessage carries senderId and content, so a single
         # addToHistory replaces the old triple-write to messageHistory,
         # messageCache, and messageSenders.
-        await rm.addToHistory(msg, channelId)
+        (await rm.addToHistory(msg, channelId)).isOkOr:
+          return err(error)
 
         return serializeMessage(msg)
       except CatchableError:
@@ -165,17 +175,17 @@ proc wrapOutgoingMessage*(
 
 proc processIncomingBuffer(
     rm: ReliabilityManager, channelId: SdsChannelID
-) {.async: (raises: [CatchableError]).} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: []).} =
   try:
     await rm.lock.acquire()
     try:
       if channelId notin rm.channels:
         error "Channel does not exist", channelId = channelId
-        return
+        return ok()
 
       let channel = rm.channels[channelId]
       if channel.incomingBuffer.len == 0:
-        return
+        return ok()
 
       var processed = initHashSet[SdsMessageID]()
       var readyToProcess = newSeq[SdsMessageID]()
@@ -190,7 +200,8 @@ proc processIncomingBuffer(
           continue
 
         if msgId in channel.incomingBuffer:
-          await rm.addToHistory(channel.incomingBuffer[msgId].message, channelId)
+          (await rm.addToHistory(channel.incomingBuffer[msgId].message, channelId)).isOkOr:
+            return err(error)
           if not rm.onMessageReady.isNil():
             {.cast(raises: []).}:
               rm.onMessageReady(msgId, channelId)
@@ -200,21 +211,26 @@ proc processIncomingBuffer(
             if remainingId notin processed:
               if msgId in entry.missingDeps:
                 channel.incomingBuffer[remainingId].missingDeps.excl(msgId)
-                await rm.persistence.saveIncoming(
-                  channelId, channel.incomingBuffer[remainingId]
-                )
+                (
+                  await rm.persistence.saveIncoming(
+                    channelId, channel.incomingBuffer[remainingId]
+                  )
+                ).isOkOr:
+                  return err(reliabilityErr(error))
                 if channel.incomingBuffer[remainingId].missingDeps.len == 0:
                   readyToProcess.add(remainingId)
 
       for msgId in processed:
         channel.incomingBuffer.del(msgId)
-        await rm.persistence.removeIncoming(channelId, msgId)
+        (await rm.persistence.removeIncoming(channelId, msgId)).isOkOr:
+          return err(reliabilityErr(error))
+      ok()
     finally:
       rm.lock.release()
-  except CatchableError as e:
+  except CatchableError:
     error "Failed to process incoming buffer",
       channelId = channelId, msg = getCurrentExceptionMsg()
-    raise e
+    err(ReliabilityError.reInternalError)
 
 proc unwrapReceivedMessage*(
     rm: ReliabilityManager, message: seq[byte]
@@ -232,22 +248,27 @@ proc unwrapReceivedMessage*(
     let msg = deserializeMessage(message).valueOr:
       return err(ReliabilityError.reDeserializationError)
 
-    let channel = await rm.getOrCreateChannel(channelId)
+    let channel = (await rm.getOrCreateChannel(channelId)).valueOr:
+      return err(error)
 
     # SDS-R: opportunistic repair-buffer cleanup — applies to duplicates too,
     # so rebroadcasts cancel redundant responses on peers that already have the message.
     channel.outgoingRepairBuffer.del(msg.messageId)
-    await rm.persistence.removeOutgoingRepair(channelId, msg.messageId)
+    (await rm.persistence.removeOutgoingRepair(channelId, msg.messageId)).isOkOr:
+      return err(reliabilityErr(error))
     channel.incomingRepairBuffer.del(msg.messageId)
-    await rm.persistence.removeIncomingRepair(channelId, msg.messageId)
+    (await rm.persistence.removeIncomingRepair(channelId, msg.messageId)).isOkOr:
+      return err(reliabilityErr(error))
 
     if msg.messageId in channel.messageHistory:
       return ok((msg.content, @[], channelId))
 
     channel.bloomFilter.add(msg.messageId)
 
-    await rm.updateLamportTimestamp(msg.lamportTimestamp, channelId)
-    await rm.reviewAckStatus(msg)
+    (await rm.updateLamportTimestamp(msg.lamportTimestamp, channelId)).isOkOr:
+      return err(error)
+    (await rm.reviewAckStatus(msg)).isOkOr:
+      return err(error)
 
     # SDS-R: process incoming repair requests from this message. We can only
     # answer for messages we have actually delivered (i.e. that live in
@@ -257,7 +278,8 @@ proc unwrapReceivedMessage*(
     for repairEntry in msg.repairRequest:
       # Remove from our own outgoing repair buffer (someone else is also requesting)
       channel.outgoingRepairBuffer.del(repairEntry.messageId)
-      await rm.persistence.removeOutgoingRepair(channelId, repairEntry.messageId)
+      (await rm.persistence.removeOutgoingRepair(channelId, repairEntry.messageId)).isOkOr:
+        return err(reliabilityErr(error))
       if repairEntry.messageId in channel.messageHistory and rm.participantId.len > 0 and
           repairEntry.senderId.len > 0:
         if isInResponseGroup(
@@ -277,9 +299,12 @@ proc unwrapReceivedMessage*(
               minTimeRepairResp: now + tResp,
             )
             channel.incomingRepairBuffer[repairEntry.messageId] = inEntry
-            await rm.persistence.saveIncomingRepair(
-              channelId, repairEntry.messageId, inEntry
-            )
+            (
+              await rm.persistence.saveIncomingRepair(
+                channelId, repairEntry.messageId, inEntry
+              )
+            ).isOkOr:
+              return err(reliabilityErr(error))
 
     var missingDeps = rm.checkDependencies(msg.causalHistory, channelId)
 
@@ -293,9 +318,11 @@ proc unwrapReceivedMessage*(
         let entry =
           IncomingMessage.init(message = msg, missingDeps = initHashSet[SdsMessageID]())
         channel.incomingBuffer[msg.messageId] = entry
-        await rm.persistence.saveIncoming(channelId, entry)
+        (await rm.persistence.saveIncoming(channelId, entry)).isOkOr:
+          return err(reliabilityErr(error))
       else:
-        await rm.addToHistory(msg, channelId)
+        (await rm.addToHistory(msg, channelId)).isOkOr:
+          return err(error)
         # Unblock any buffered messages that were waiting on this one.
         var unblocked: seq[SdsMessageID] = @[]
         for pendingId, entry in channel.incomingBuffer:
@@ -303,10 +330,14 @@ proc unwrapReceivedMessage*(
             channel.incomingBuffer[pendingId].missingDeps.excl(msg.messageId)
             unblocked.add(pendingId)
         for pendingId in unblocked:
-          await rm.persistence.saveIncoming(
-            channelId, channel.incomingBuffer[pendingId]
-          )
-        await rm.processIncomingBuffer(channelId)
+          (
+            await rm.persistence.saveIncoming(
+              channelId, channel.incomingBuffer[pendingId]
+            )
+          ).isOkOr:
+            return err(reliabilityErr(error))
+        (await rm.processIncomingBuffer(channelId)).isOkOr:
+          return err(error)
         if not rm.onMessageReady.isNil():
           {.cast(raises: []).}:
             rm.onMessageReady(msg.messageId, channelId)
@@ -315,7 +346,8 @@ proc unwrapReceivedMessage*(
         message = msg, missingDeps = missingDeps.getMessageIds().toHashSet()
       )
       channel.incomingBuffer[msg.messageId] = entry
-      await rm.persistence.saveIncoming(channelId, entry)
+      (await rm.persistence.saveIncoming(channelId, entry)).isOkOr:
+        return err(reliabilityErr(error))
       if not rm.onMissingDependencies.isNil():
         {.cast(raises: []).}:
           rm.onMissingDependencies(msg.messageId, missingDeps, channelId)
@@ -331,7 +363,12 @@ proc unwrapReceivedMessage*(
             let outEntry =
               OutgoingRepairEntry(outHistEntry: dep, minTimeRepairReq: now + tReq)
             channel.outgoingRepairBuffer[dep.messageId] = outEntry
-            await rm.persistence.saveOutgoingRepair(channelId, dep.messageId, outEntry)
+            (
+              await rm.persistence.saveOutgoingRepair(
+                channelId, dep.messageId, outEntry
+              )
+            ).isOkOr:
+              return err(reliabilityErr(error))
 
     return ok((msg.content, missingDeps, channelId))
   except CatchableError:
@@ -358,15 +395,23 @@ proc markDependenciesMet*(
           channel.incomingBuffer[pendingId].missingDeps.excl(msgId)
           unblocked.add(pendingId)
       for pendingId in unblocked:
-        await rm.persistence.saveIncoming(channelId, channel.incomingBuffer[pendingId])
+        (
+          await rm.persistence.saveIncoming(
+            channelId, channel.incomingBuffer[pendingId]
+          )
+        ).isOkOr:
+          return err(reliabilityErr(error))
 
       # SDS-R: clear from repair buffers (dependency now met)
       channel.outgoingRepairBuffer.del(msgId)
-      await rm.persistence.removeOutgoingRepair(channelId, msgId)
+      (await rm.persistence.removeOutgoingRepair(channelId, msgId)).isOkOr:
+        return err(reliabilityErr(error))
       channel.incomingRepairBuffer.del(msgId)
-      await rm.persistence.removeIncomingRepair(channelId, msgId)
+      (await rm.persistence.removeIncomingRepair(channelId, msgId)).isOkOr:
+        return err(reliabilityErr(error))
 
-    await rm.processIncomingBuffer(channelId)
+    (await rm.processIncomingBuffer(channelId)).isOkOr:
+      return err(error)
     return ok()
   except CatchableError:
     error "Failed to mark dependencies as met",
@@ -399,13 +444,13 @@ proc setCallbacks*(
 
 proc checkUnacknowledgedMessages(
     rm: ReliabilityManager, channelId: SdsChannelID
-) {.async: (raises: []).} =
+): Future[Result[void, ReliabilityError]] {.async: (raises: []).} =
   try:
     await rm.lock.acquire()
     try:
       if channelId notin rm.channels:
         error "Channel does not exist", channelId = channelId
-        return
+        return ok()
 
       let channel = rm.channels[channelId]
       let now = getTime()
@@ -419,27 +464,34 @@ proc checkUnacknowledgedMessages(
             updatedMsg.resendAttempts += 1
             updatedMsg.sendTime = now
             newOutgoingBuffer.add(updatedMsg)
-            await rm.persistence.saveOutgoing(channelId, updatedMsg)
+            (await rm.persistence.saveOutgoing(channelId, updatedMsg)).isOkOr:
+              return err(reliabilityErr(error))
           else:
             if not rm.onMessageSent.isNil():
               {.cast(raises: []).}:
                 rm.onMessageSent(unackMsg.message.messageId, channelId)
-            await rm.persistence.removeOutgoing(channelId, unackMsg.message.messageId)
+            (await rm.persistence.removeOutgoing(channelId, unackMsg.message.messageId)).isOkOr:
+              return err(reliabilityErr(error))
         else:
           newOutgoingBuffer.add(unackMsg)
 
       channel.outgoingBuffer = newOutgoingBuffer
+      ok()
     finally:
       rm.lock.release()
   except CatchableError:
     error "Failed to check unacknowledged messages",
       channelId = channelId, msg = getCurrentExceptionMsg()
+    err(ReliabilityError.reInternalError)
 
 proc periodicBufferSweep(rm: ReliabilityManager) {.async: (raises: [CancelledError]).} =
   while true:
     try:
       for channelId, channel in rm.channels:
-        await rm.checkUnacknowledgedMessages(channelId)
+        # Background maintenance has no caller to return to: a persistence
+        # error is logged (by reliabilityErr) and the sweep continues; the
+        # next tick retries.
+        discard await rm.checkUnacknowledgedMessages(channelId)
         await rm.cleanBloomFilter(channelId)
     except CatchableError:
       error "Error in periodic buffer sweep", msg = getCurrentExceptionMsg()
@@ -455,13 +507,18 @@ proc periodicSyncMessage(rm: ReliabilityManager) {.async: (raises: [CancelledErr
       error "Error in periodic sync", msg = getCurrentExceptionMsg()
     await sleepAsync(chronos.seconds(rm.config.syncMessageInterval.inSeconds))
 
-proc runRepairSweep*(rm: ReliabilityManager) {.async: (raises: []).} =
+proc runRepairSweep*(
+    rm: ReliabilityManager
+): Future[Result[void, ReliabilityError]] {.async: (raises: []).} =
   ## SDS-R: Runs a single pass of the repair sweep.
   ## - Incoming: fires onRepairReady for expired T_resp entries and removes them
   ## - Outgoing: drops entries past T_max window
   ## Exposed so it can be driven directly in tests; also invoked by periodicRepairSweep.
   ## Acquires rm.lock so the repair buffers cannot be observed mid-mutation by
   ## a concurrent wrapOutgoingMessage / unwrapReceivedMessage on another task.
+  ## A persistence error aborts the current pass (the periodic caller retries
+  ## on the next tick); non-persistence per-channel errors are logged and the
+  ## sweep continues to the next channel.
   try:
     await rm.lock.acquire()
     try:
@@ -477,7 +534,8 @@ proc runRepairSweep*(rm: ReliabilityManager) {.async: (raises: []).} =
           for msgId in toRebroadcast:
             let entry = channel.incomingRepairBuffer[msgId]
             channel.incomingRepairBuffer.del(msgId)
-            await rm.persistence.removeIncomingRepair(channelId, msgId)
+            (await rm.persistence.removeIncomingRepair(channelId, msgId)).isOkOr:
+              return err(reliabilityErr(error))
             if not rm.onRepairReady.isNil():
               {.cast(raises: []).}:
                 rm.onRepairReady(entry.cachedMessage, channelId)
@@ -490,20 +548,24 @@ proc runRepairSweep*(rm: ReliabilityManager) {.async: (raises: []).} =
               toRemove.add(msgId)
           for msgId in toRemove:
             channel.outgoingRepairBuffer.del(msgId)
-            await rm.persistence.removeOutgoingRepair(channelId, msgId)
+            (await rm.persistence.removeOutgoingRepair(channelId, msgId)).isOkOr:
+              return err(reliabilityErr(error))
         except CatchableError:
           error "Error in repair sweep for channel",
             channelId = channelId, msg = getCurrentExceptionMsg()
+      ok()
     finally:
       rm.lock.release()
   except CatchableError:
     error "Error in repair sweep", msg = getCurrentExceptionMsg()
+    err(ReliabilityError.reInternalError)
 
 proc periodicRepairSweep(rm: ReliabilityManager) {.async: (raises: [CancelledError]).} =
   ## SDS-R: Periodically checks repair buffers for expired entries.
   while true:
     try:
-      await rm.runRepairSweep()
+      # Background maintenance: log a failed pass and retry next tick.
+      discard await rm.runRepairSweep()
     except CatchableError:
       error "Error in periodic repair sweep", msg = getCurrentExceptionMsg()
     await sleepAsync(chronos.milliseconds(rm.config.repairSweepInterval.inMilliseconds))
@@ -526,7 +588,8 @@ proc resetReliabilityManager*(
     try:
       try:
         for channelId, channel in rm.channels:
-          await rm.dropChannelFromPersistence(channelId)
+          (await rm.dropChannelFromPersistence(channelId)).isOkOr:
+            return err(error)
           channel.lamportTimestamp = 0
           channel.messageHistory.clear()
           channel.outgoingBuffer.setLen(0)

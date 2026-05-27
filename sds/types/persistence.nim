@@ -1,11 +1,12 @@
-import chronos
+import chronos, results
 import ./sds_message_id
 import ./sds_message
 import ./unacknowledged_message
 import ./incoming_message
 import ./repair_entry
 export
-  sds_message_id, sds_message, unacknowledged_message, incoming_message, repair_entry
+  results, sds_message_id, sds_message, unacknowledged_message, incoming_message,
+  repair_entry
 
 ## SDS state persistence interface (issue #64).
 ##
@@ -17,6 +18,14 @@ export
 ##
 ## All proc fields are async (return `Future`) so backends can do real I/O
 ## without blocking the Chronos event loop the manager runs on.
+##
+## Every field returns a `Result` so backend failures are propagated to nim-sds
+## rather than swallowed by the backend. Mutating ops return
+## `Result[void, string]`; the getter (`loadAllForChannel`) returns
+## `Result[ChannelSnapshot, string]`. The error is a backend-supplied message;
+## nim-sds maps it to `ReliabilityError.rePersistenceError` and surfaces it on
+## the corresponding public API call. The contract still forbids raising
+## (`raises: []`): failure must travel through the `Result`, not an exception.
 ##
 ## Bloom filter is intentionally not persisted: it is rebuilt from the local
 ## history log on bootstrap. Async timers are likewise recomputed from the
@@ -44,120 +53,125 @@ type
     ## in-memory state in lockstep without blocking the event loop.
 
     # Per-channel lamport clock
-    saveLamport*: proc(channelId: SdsChannelID, lamport: int64): Future[void] {.
-      async: (raises: []), gcsafe
-    .}
+    saveLamport*: proc(
+      channelId: SdsChannelID, lamport: int64
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
 
     # Local log (delivered messages)
-    appendLogEntry*: proc(channelId: SdsChannelID, msg: SdsMessage): Future[void] {.
-      async: (raises: []), gcsafe
-    .}
-    removeLogEntry*: proc(channelId: SdsChannelID, msgId: SdsMessageID): Future[void] {.
-      async: (raises: []), gcsafe
-    .}
-    setRetrievalHint*: proc(msgId: SdsMessageID, hint: seq[byte]): Future[void] {.
-      async: (raises: []), gcsafe
-    .}
+    appendLogEntry*: proc(
+      channelId: SdsChannelID, msg: SdsMessage
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
+    removeLogEntry*: proc(
+      channelId: SdsChannelID, msgId: SdsMessageID
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
+    setRetrievalHint*: proc(
+      msgId: SdsMessageID, hint: seq[byte]
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
 
     # Outgoing unacknowledged buffer
     saveOutgoing*: proc(
       channelId: SdsChannelID, msg: UnacknowledgedMessage
-    ): Future[void] {.async: (raises: []), gcsafe.}
-    removeOutgoing*: proc(channelId: SdsChannelID, msgId: SdsMessageID): Future[void] {.
-      async: (raises: []), gcsafe
-    .}
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
+    removeOutgoing*: proc(
+      channelId: SdsChannelID, msgId: SdsMessageID
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
 
     # Incoming dependency-waiting buffer
-    saveIncoming*: proc(channelId: SdsChannelID, msg: IncomingMessage): Future[void] {.
-      async: (raises: []), gcsafe
-    .}
-    removeIncoming*: proc(channelId: SdsChannelID, msgId: SdsMessageID): Future[void] {.
-      async: (raises: []), gcsafe
-    .}
+    saveIncoming*: proc(
+      channelId: SdsChannelID, msg: IncomingMessage
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
+    removeIncoming*: proc(
+      channelId: SdsChannelID, msgId: SdsMessageID
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
 
     # SDS-R outgoing repair buffer
     saveOutgoingRepair*: proc(
       channelId: SdsChannelID, msgId: SdsMessageID, entry: OutgoingRepairEntry
-    ) {.async: (raises: []).}
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
     removeOutgoingRepair*: proc(
       channelId: SdsChannelID, msgId: SdsMessageID
-    ): Future[void] {.async: (raises: []), gcsafe.}
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
 
     # SDS-R incoming repair buffer
     saveIncomingRepair*: proc(
       channelId: SdsChannelID, msgId: SdsMessageID, entry: IncomingRepairEntry
-    ) {.async: (raises: []).}
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
     removeIncomingRepair*: proc(
       channelId: SdsChannelID, msgId: SdsMessageID
-    ): Future[void] {.async: (raises: []), gcsafe.}
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
 
     # Wipe all persisted state for a channel in one transactional call.
     # Called by removeChannel / resetReliabilityManager. Backends should
     # implement this atomically (e.g. one BEGIN/COMMIT) — a per-row loop on
     # the nim-sds side would mean N fsyncs per drop.
-    dropChannel*:
-      proc(channelId: SdsChannelID): Future[void] {.async: (raises: []), gcsafe.}
-
-    # Bootstrap on `addChannel` / `getOrCreateChannel`.
-    loadAllForChannel*: proc(channelId: SdsChannelID): Future[ChannelSnapshot] {.
+    dropChannel*: proc(channelId: SdsChannelID): Future[Result[void, string]] {.
       async: (raises: []), gcsafe
     .}
+
+    # Bootstrap on `addChannel` / `getOrCreateChannel`.
+    loadAllForChannel*: proc(
+      channelId: SdsChannelID
+    ): Future[Result[ChannelSnapshot, string]] {.async: (raises: []), gcsafe.}
 
 proc noOpPersistence*(): Persistence =
   ## Default backend that discards every write and returns an empty snapshot.
   ## Used so existing callers (and tests) that don't care about durability
   ## keep working without supplying a real backend.
   Persistence(
-    saveLamport: proc(channelId: SdsChannelID, lamport: int64) {.async: (raises: []).} =
-      discard,
+    saveLamport: proc(
+        channelId: SdsChannelID, lamport: int64
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
     appendLogEntry: proc(
         channelId: SdsChannelID, msg: SdsMessage
-    ) {.async: (raises: []).} =
-      discard,
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
     removeLogEntry: proc(
         channelId: SdsChannelID, msgId: SdsMessageID
-    ) {.async: (raises: []).} =
-      discard,
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
     setRetrievalHint: proc(
         msgId: SdsMessageID, hint: seq[byte]
-    ) {.async: (raises: []).} =
-      discard,
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
     saveOutgoing: proc(
         channelId: SdsChannelID, msg: UnacknowledgedMessage
-    ) {.async: (raises: []).} =
-      discard,
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
     removeOutgoing: proc(
         channelId: SdsChannelID, msgId: SdsMessageID
-    ) {.async: (raises: []).} =
-      discard,
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
     saveIncoming: proc(
         channelId: SdsChannelID, msg: IncomingMessage
-    ) {.async: (raises: []).} =
-      discard,
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
     removeIncoming: proc(
         channelId: SdsChannelID, msgId: SdsMessageID
-    ) {.async: (raises: []).} =
-      discard,
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
     saveOutgoingRepair: proc(
         channelId: SdsChannelID, msgId: SdsMessageID, entry: OutgoingRepairEntry
-    ) {.async: (raises: []).} =
-      discard,
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
     removeOutgoingRepair: proc(
         channelId: SdsChannelID, msgId: SdsMessageID
-    ) {.async: (raises: []).} =
-      discard,
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
     saveIncomingRepair: proc(
         channelId: SdsChannelID, msgId: SdsMessageID, entry: IncomingRepairEntry
-    ) {.async: (raises: []).} =
-      discard,
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
     removeIncomingRepair: proc(
         channelId: SdsChannelID, msgId: SdsMessageID
-    ) {.async: (raises: []).} =
-      discard,
-    dropChannel: proc(channelId: SdsChannelID) {.async: (raises: []).} =
-      discard,
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
+    dropChannel: proc(
+        channelId: SdsChannelID
+    ): Future[Result[void, string]] {.async: (raises: []).} =
+      ok(),
     loadAllForChannel: proc(
         channelId: SdsChannelID
-    ): Future[ChannelSnapshot] {.async: (raises: []).} =
-      return ChannelSnapshot(),
+    ): Future[Result[ChannelSnapshot, string]] {.async: (raises: []).} =
+      ok(ChannelSnapshot()),
   )
