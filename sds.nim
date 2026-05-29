@@ -79,10 +79,10 @@ proc reviewAckStatus(
       inc i
 
     for k in countdown(toDelete.high, 0):
-      let (idx, ackedId) = toDelete[k]
-      channel.outgoingBuffer.delete(idx)
-      (await rm.persistence.removeOutgoing(msg.channelId, ackedId)).isOkOr:
-        return err(reliabilityErr(error))
+      # Phase 2B: in-memory deletion only; the caller's op-end trySaveMeta
+      # captures the new outgoingBuffer state. The msgId half of the
+      # tuple is unused now that there is no per-row persistence call.
+      channel.outgoingBuffer.delete(toDelete[k][0])
     ok()
   except CatchableError:
     error "Failed to review ack status", msg = getCurrentExceptionMsg()
@@ -133,8 +133,7 @@ proc wrapOutgoingMessage*(
           expiredKeys.add(eligible[i][0])
         for key in expiredKeys:
           channel.outgoingRepairBuffer.del(key)
-          (await rm.persistence.removeOutgoingRepair(channelId, key)).isOkOr:
-            return err(reliabilityErr(error))
+          # Phase 2B: in-memory deletion only; op-end trySaveMeta covers it.
 
         let causalHistory = (
           await rm.getRecentHistoryEntries(rm.config.maxCausalHistory, channelId)
@@ -155,8 +154,7 @@ proc wrapOutgoingMessage*(
           message = msg, sendTime = getTime(), resendAttempts = 0
         )
         channel.outgoingBuffer.add(unackMsg)
-        (await rm.persistence.saveOutgoing(channelId, unackMsg)).isOkOr:
-          return err(reliabilityErr(error))
+        # Phase 2B: in-memory append only; op-end trySaveMeta covers it.
 
         channel.bloomFilter.add(msg.messageId)
         # The full SdsMessage carries senderId and content, so a single
@@ -222,20 +220,17 @@ proc processIncomingBuffer(
           for remainingId, entry in channel.incomingBuffer:
             if remainingId notin processed:
               if msgId in entry.missingDeps:
+                # Phase 2B: in-memory dep-set shrink only; the parent op
+                # (unwrap / markDeps) issues a single trySaveMeta at its
+                # end that captures the final incomingBuffer state.
                 channel.incomingBuffer[remainingId].missingDeps.excl(msgId)
-                (
-                  await rm.persistence.saveIncoming(
-                    channelId, channel.incomingBuffer[remainingId]
-                  )
-                ).isOkOr:
-                  return err(reliabilityErr(error))
                 if channel.incomingBuffer[remainingId].missingDeps.len == 0:
                   readyToProcess.add(remainingId)
 
       for msgId in processed:
+        # Phase 2B: in-memory deletion only; parent op's trySaveMeta covers
+        # the drained buffer state.
         channel.incomingBuffer.del(msgId)
-        (await rm.persistence.removeIncoming(channelId, msgId)).isOkOr:
-          return err(reliabilityErr(error))
       ok()
     finally:
       rm.lock.release()
@@ -265,12 +260,9 @@ proc unwrapReceivedMessage*(
 
     # SDS-R: opportunistic repair-buffer cleanup — applies to duplicates too,
     # so rebroadcasts cancel redundant responses on peers that already have the message.
+    # Phase 2B: in-memory deletes only; op-end trySaveMeta covers it.
     channel.outgoingRepairBuffer.del(msg.messageId)
-    (await rm.persistence.removeOutgoingRepair(channelId, msg.messageId)).isOkOr:
-      return err(reliabilityErr(error))
     channel.incomingRepairBuffer.del(msg.messageId)
-    (await rm.persistence.removeIncomingRepair(channelId, msg.messageId)).isOkOr:
-      return err(reliabilityErr(error))
 
     if msg.messageId in channel.messageHistory:
       # Duplicate: no state change beyond the repair-buffer cleanup above.
@@ -292,10 +284,9 @@ proc unwrapReceivedMessage*(
     # to confidently rebroadcast.
     let now = getTime()
     for repairEntry in msg.repairRequest:
-      # Remove from our own outgoing repair buffer (someone else is also requesting)
+      # Remove from our own outgoing repair buffer (someone else is also requesting).
+      # Phase 2B: in-memory delete only; op-end trySaveMeta covers it.
       channel.outgoingRepairBuffer.del(repairEntry.messageId)
-      (await rm.persistence.removeOutgoingRepair(channelId, repairEntry.messageId)).isOkOr:
-        return err(reliabilityErr(error))
       if repairEntry.messageId in channel.messageHistory and rm.participantId.len > 0 and
           repairEntry.senderId.len > 0:
         if isInResponseGroup(
@@ -314,13 +305,8 @@ proc unwrapReceivedMessage*(
               cachedMessage: serialized.get(),
               minTimeRepairResp: now + tResp,
             )
+            # Phase 2B: in-memory insert only; op-end trySaveMeta covers it.
             channel.incomingRepairBuffer[repairEntry.messageId] = inEntry
-            (
-              await rm.persistence.saveIncomingRepair(
-                channelId, repairEntry.messageId, inEntry
-              )
-            ).isOkOr:
-              return err(reliabilityErr(error))
 
     var missingDeps = rm.checkDependencies(msg.causalHistory, channelId)
 
@@ -333,25 +319,19 @@ proc unwrapReceivedMessage*(
       if depsInBuffer:
         let entry =
           IncomingMessage.init(message = msg, missingDeps = initHashSet[SdsMessageID]())
+        # Phase 2B: in-memory insert only; op-end trySaveMeta covers it.
         channel.incomingBuffer[msg.messageId] = entry
-        (await rm.persistence.saveIncoming(channelId, entry)).isOkOr:
-          return err(reliabilityErr(error))
       else:
         (await rm.addToHistory(msg, channelId)).isOkOr:
           return err(error)
         # Unblock any buffered messages that were waiting on this one.
-        var unblocked: seq[SdsMessageID] = @[]
+        # Phase 2B: in-memory dep-set shrink only; op-end trySaveMeta and
+        # the subsequent processIncomingBuffer cascade (which is also
+        # in-memory only) leave the final state on the in-memory side, and
+        # the op-end trySaveMeta snapshots it.
         for pendingId, entry in channel.incomingBuffer:
           if msg.messageId in entry.missingDeps:
             channel.incomingBuffer[pendingId].missingDeps.excl(msg.messageId)
-            unblocked.add(pendingId)
-        for pendingId in unblocked:
-          (
-            await rm.persistence.saveIncoming(
-              channelId, channel.incomingBuffer[pendingId]
-            )
-          ).isOkOr:
-            return err(reliabilityErr(error))
         (await rm.processIncomingBuffer(channelId)).isOkOr:
           return err(error)
         if not rm.onMessageReady.isNil():
@@ -361,9 +341,8 @@ proc unwrapReceivedMessage*(
       let entry = IncomingMessage.init(
         message = msg, missingDeps = missingDeps.getMessageIds().toHashSet()
       )
+      # Phase 2B: in-memory insert only; op-end trySaveMeta covers it.
       channel.incomingBuffer[msg.messageId] = entry
-      (await rm.persistence.saveIncoming(channelId, entry)).isOkOr:
-        return err(reliabilityErr(error))
       if not rm.onMissingDependencies.isNil():
         {.cast(raises: []).}:
           rm.onMissingDependencies(msg.messageId, missingDeps, channelId)
@@ -378,13 +357,8 @@ proc unwrapReceivedMessage*(
             )
             let outEntry =
               OutgoingRepairEntry(outHistEntry: dep, minTimeRepairReq: now + tReq)
+            # Phase 2B: in-memory insert only; op-end trySaveMeta covers it.
             channel.outgoingRepairBuffer[dep.messageId] = outEntry
-            (
-              await rm.persistence.saveOutgoingRepair(
-                channelId, dep.messageId, outEntry
-              )
-            ).isOkOr:
-              return err(reliabilityErr(error))
 
     # Phase 2.5: single V2 meta snapshot covers ALL three paths
     # (deps-met-fresh, deps-met-buffered, missing-deps). Buffer mutations,
@@ -411,26 +385,15 @@ proc markDependenciesMet*(
       if not channel.bloomFilter.contains(msgId):
         channel.bloomFilter.add(msgId)
 
-      var unblocked: seq[SdsMessageID] = @[]
+      # Phase 2B: in-memory dep-set shrink + repair-buffer dels only; the
+      # op-end trySaveMeta below covers all mutations atomically.
       for pendingId, entry in channel.incomingBuffer:
         if msgId in entry.missingDeps:
           channel.incomingBuffer[pendingId].missingDeps.excl(msgId)
-          unblocked.add(pendingId)
-      for pendingId in unblocked:
-        (
-          await rm.persistence.saveIncoming(
-            channelId, channel.incomingBuffer[pendingId]
-          )
-        ).isOkOr:
-          return err(reliabilityErr(error))
 
-      # SDS-R: clear from repair buffers (dependency now met)
+      # SDS-R: clear from repair buffers (dependency now met).
       channel.outgoingRepairBuffer.del(msgId)
-      (await rm.persistence.removeOutgoingRepair(channelId, msgId)).isOkOr:
-        return err(reliabilityErr(error))
       channel.incomingRepairBuffer.del(msgId)
-      (await rm.persistence.removeIncomingRepair(channelId, msgId)).isOkOr:
-        return err(reliabilityErr(error))
 
     (await rm.processIncomingBuffer(channelId)).isOkOr:
       return err(error)

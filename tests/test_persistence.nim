@@ -1,18 +1,30 @@
 import results, std/[tables, sets, times]
 import sds
 import ./async_unittest
-import ./in_memory_persistence
+import ./in_memory_persistence_v2
 
 converter toParticipantID(s: string): SdsParticipantID =
   s.SdsParticipantID
 
 const testChannel = "testChannel"
 
-suite "Persistence: write → restart → read-back":
+# Helper: build a ReliabilityManager wired only to the V2 in-memory
+# persistence (no legacy backend). Mirrors how production callers will
+# construct the manager once phase 3 deletes the legacy field.
+proc newV2Manager(
+    store: InMemoryStore, config = defaultConfig()
+): ReliabilityManager =
+  newReliabilityManager(
+      participantId = "alice",
+      config = config,
+      persistenceV2 = newInMemoryPersistenceV2(store),
+    )
+    .get()
+
+suite "Persistence (V2): write → restart → read-back":
   asyncTest "outgoing buffer survives restart":
     let store = newInMemoryStore()
-    let p1 = newInMemoryPersistence(store)
-    let rm1 = newReliabilityManager(participantId = "alice", persistence = p1).get()
+    let rm1 = newV2Manager(store)
     check (await rm1.ensureChannel(testChannel)).isOk()
     let wrapped = await rm1.wrapOutgoingMessage(@[1.byte, 2, 3], "msg-1", testChannel)
     check wrapped.isOk()
@@ -20,9 +32,8 @@ suite "Persistence: write → restart → read-back":
     check "msg-1" in store.outgoing[testChannel]
     await rm1.cleanup()
 
-    # Simulate restart: fresh manager, same backend
-    let p2 = newInMemoryPersistence(store)
-    let rm2 = newReliabilityManager(participantId = "alice", persistence = p2).get()
+    # Simulate restart: fresh manager, same backend.
+    let rm2 = newV2Manager(store)
     check (await rm2.ensureChannel(testChannel)).isOk()
     let buf = await rm2.getOutgoingBuffer(testChannel)
     check buf.len == 1
@@ -31,22 +42,25 @@ suite "Persistence: write → restart → read-back":
 
   asyncTest "lamport clock survives restart":
     let store = newInMemoryStore()
-    let p1 = newInMemoryPersistence(store)
-    let rm1 = newReliabilityManager(participantId = "alice", persistence = p1).get()
+    let rm1 = newV2Manager(store)
     check (await rm1.ensureChannel(testChannel)).isOk()
     check (await rm1.updateLamportTimestamp(42, testChannel)).isOk()
-    check store.lamports[testChannel] == 43 # max(42, 0) + 1
+    # updateLamportTimestamp is now pure; the mutation is persisted by the
+    # next op-end save. Drive a wrap to force a trySaveMeta.
+    discard await rm1.wrapOutgoingMessage(@[byte(1)], "tick", testChannel)
+    # max(42,0)+1 then max(getTime().toUnix, 43)+1; whatever wrap sets is
+    # what we'll see. We just assert it stayed monotonic.
+    check store.lamports[testChannel] >= 43
+    let savedLamport = store.lamports[testChannel]
     await rm1.cleanup()
 
-    let p2 = newInMemoryPersistence(store)
-    let rm2 = newReliabilityManager(participantId = "alice", persistence = p2).get()
+    let rm2 = newV2Manager(store)
     check (await rm2.ensureChannel(testChannel)).isOk()
-    check rm2.channels[testChannel].lamportTimestamp == 43
+    check rm2.channels[testChannel].lamportTimestamp == savedLamport
 
   asyncTest "delivered messages survive restart and rebuild bloom":
     let store = newInMemoryStore()
-    let p1 = newInMemoryPersistence(store)
-    let rm1 = newReliabilityManager(participantId = "alice", persistence = p1).get()
+    let rm1 = newV2Manager(store)
     check (await rm1.ensureChannel(testChannel)).isOk()
     let msg = SdsMessage.init(
       messageId = "delivered-1",
@@ -61,24 +75,22 @@ suite "Persistence: write → restart → read-back":
     check store.log[testChannel].len == 1
     await rm1.cleanup()
 
-    let p2 = newInMemoryPersistence(store)
-    let rm2 = newReliabilityManager(participantId = "alice", persistence = p2).get()
+    let rm2 = newV2Manager(store)
     check (await rm2.ensureChannel(testChannel)).isOk()
     let ch = rm2.channels[testChannel]
     check ch.messageHistory.len == 1
     check "delivered-1" in ch.messageHistory
-    # Bloom filter rebuilt from log on bootstrap
+    # Bloom filter rebuilt from log on bootstrap.
     check ch.bloomFilter.contains("delivered-1")
 
   asyncTest "ack removes outgoing entry from persistence":
     let store = newInMemoryStore()
-    let p = newInMemoryPersistence(store)
-    let rm = newReliabilityManager(participantId = "alice", persistence = p).get()
+    let rm = newV2Manager(store)
     check (await rm.ensureChannel(testChannel)).isOk()
     discard await rm.wrapOutgoingMessage(@[1.byte], "msg-x", testChannel)
     check "msg-x" in store.outgoing[testChannel]
 
-    # Synthesize an incoming message that ACKs msg-x via causal history
+    # Synthesize an incoming message that ACKs msg-x via causal history.
     let ackMsg = SdsMessage.init(
       messageId = "ack-bearer",
       lamportTimestamp = 5,
@@ -95,10 +107,9 @@ suite "Persistence: write → restart → read-back":
 
   asyncTest "removeChannel issues exactly one dropChannel call and wipes all state":
     # Regression for PR #66 review: removal must be a single transactional
-    # drop, not N per-row removes — otherwise SQLite eats N fsyncs per drop.
+    # drop, not N per-row removes.
     let store = newInMemoryStore()
-    let p = newInMemoryPersistence(store)
-    let rm = newReliabilityManager(participantId = "alice", persistence = p).get()
+    let rm = newV2Manager(store)
     check (await rm.ensureChannel(testChannel)).isOk()
     discard await rm.wrapOutgoingMessage(@[1.byte], "msg-r", testChannel)
     check store.outgoing[testChannel].len == 1
@@ -114,9 +125,9 @@ suite "Persistence: write → restart → read-back":
     check testChannel notin store.incomingRepair
     await rm.cleanup()
 
-  asyncTest "noOpPersistence keeps existing manager working":
+  asyncTest "noOpPersistenceV2 keeps existing manager working":
     let rm = newReliabilityManager(participantId = "alice").get()
-      # default no-op persistence
+      # default no-op persistence (both legacy and V2)
     check (await rm.ensureChannel(testChannel)).isOk()
     let wrapped = await rm.wrapOutgoingMessage(@[1.byte], "msg-n", testChannel)
     check wrapped.isOk()
@@ -126,8 +137,7 @@ suite "Persistence: write → restart → read-back":
 
   asyncTest "continue operating after restart: lamport stays monotonic":
     let store = newInMemoryStore()
-    let p1 = newInMemoryPersistence(store)
-    let rm1 = newReliabilityManager(participantId = "alice", persistence = p1).get()
+    let rm1 = newV2Manager(store)
     check (await rm1.ensureChannel(testChannel)).isOk()
     discard await rm1.wrapOutgoingMessage(@[1.byte], "m1", testChannel)
     let lamportAfterSession1 = store.lamports[testChannel]
@@ -135,8 +145,7 @@ suite "Persistence: write → restart → read-back":
     await rm1.cleanup()
 
     # Restart and send another message — lamport must not regress.
-    let p2 = newInMemoryPersistence(store)
-    let rm2 = newReliabilityManager(participantId = "alice", persistence = p2).get()
+    let rm2 = newV2Manager(store)
     check (await rm2.ensureChannel(testChannel)).isOk()
     check rm2.channels[testChannel].lamportTimestamp == lamportAfterSession1
     discard await rm2.wrapOutgoingMessage(@[2.byte], "m2", testChannel)
@@ -148,16 +157,13 @@ suite "Persistence: write → restart → read-back":
   asyncTest "multiple restart cycles preserve state":
     let store = newInMemoryStore()
     for i in 1 .. 3:
-      let p = newInMemoryPersistence(store)
-      let rm = newReliabilityManager(participantId = "alice", persistence = p).get()
+      let rm = newV2Manager(store)
       check (await rm.ensureChannel(testChannel)).isOk()
       discard await rm.wrapOutgoingMessage(@[byte(i)], "m" & $i, testChannel)
       await rm.cleanup()
 
     # Final session: all three messages must be in the buffer.
-    let pFinal = newInMemoryPersistence(store)
-    let rmFinal =
-      newReliabilityManager(participantId = "alice", persistence = pFinal).get()
+    let rmFinal = newV2Manager(store)
     check (await rmFinal.ensureChannel(testChannel)).isOk()
     let buf = await rmFinal.getOutgoingBuffer(testChannel)
     check buf.len == 3
@@ -171,8 +177,7 @@ suite "Persistence: write → restart → read-back":
 
   asyncTest "incoming dep-waiting buffer survives restart with missingDeps intact":
     let store = newInMemoryStore()
-    let p1 = newInMemoryPersistence(store)
-    let rm1 = newReliabilityManager(participantId = "alice", persistence = p1).get()
+    let rm1 = newV2Manager(store)
     check (await rm1.ensureChannel(testChannel)).isOk()
 
     # Receive a message whose causal-history references an unknown predecessor.
@@ -191,8 +196,7 @@ suite "Persistence: write → restart → read-back":
     await rm1.cleanup()
 
     # Restart — buffered message and its missing-deps set must be back.
-    let p2 = newInMemoryPersistence(store)
-    let rm2 = newReliabilityManager(participantId = "alice", persistence = p2).get()
+    let rm2 = newV2Manager(store)
     check (await rm2.ensureChannel(testChannel)).isOk()
     let inbuf = await rm2.getIncomingBuffer(testChannel)
     check "msg-with-deps" in inbuf
@@ -200,11 +204,8 @@ suite "Persistence: write → restart → read-back":
     await rm2.cleanup()
 
   asyncTest "removeChannel + recreate does not inherit stale lamport":
-    # Regression: dropChannel must wipe the lamport row; otherwise a recreate
-    # of the same channelId after restart picks up the old timestamp.
     let store = newInMemoryStore()
-    let p1 = newInMemoryPersistence(store)
-    let rm1 = newReliabilityManager(participantId = "alice", persistence = p1).get()
+    let rm1 = newV2Manager(store)
     check (await rm1.ensureChannel(testChannel)).isOk()
     discard await rm1.wrapOutgoingMessage(@[1.byte], "m-old", testChannel)
     check store.lamports[testChannel] > 0
@@ -213,8 +214,7 @@ suite "Persistence: write → restart → read-back":
     await rm1.cleanup()
 
     # Recreate the same channelId after a restart — must start fresh.
-    let p2 = newInMemoryPersistence(store)
-    let rm2 = newReliabilityManager(participantId = "alice", persistence = p2).get()
+    let rm2 = newV2Manager(store)
     check (await rm2.ensureChannel(testChannel)).isOk()
     check rm2.channels[testChannel].lamportTimestamp == 0
     let buf = await rm2.getOutgoingBuffer(testChannel)
@@ -223,11 +223,9 @@ suite "Persistence: write → restart → read-back":
 
   asyncTest "SDS-R outgoing repair buffer survives restart with absolute t_req_at":
     let store = newInMemoryStore()
-    let p1 = newInMemoryPersistence(store)
-    let rm1 = newReliabilityManager(participantId = "alice", persistence = p1).get()
+    let rm1 = newV2Manager(store)
     check (await rm1.ensureChannel(testChannel)).isOk()
 
-    # Receive a message that references an unknown dep — triggers SDS-R repair.
     let depMsg = SdsMessage.init(
       messageId = "msg-needs-repair",
       lamportTimestamp = 5,
@@ -244,13 +242,16 @@ suite "Persistence: write → restart → read-back":
     check originalTReqAt.toUnix > 0
     await rm1.cleanup()
 
-    # Restart — repair entry must be back with the SAME absolute time, not "now".
-    let p2 = newInMemoryPersistence(store)
-    let rm2 = newReliabilityManager(participantId = "alice", persistence = p2).get()
+    # Restart — repair entry must be back with the SAME absolute time.
+    # Codec serialises Time as int64 unix milliseconds (PLAN §1.5), so the
+    # restored Time may differ by sub-millisecond precision from the
+    # original. Compare at second resolution which is what the protocol
+    # actually relies on.
+    let rm2 = newV2Manager(store)
     check (await rm2.ensureChannel(testChannel)).isOk()
     let buf = rm2.channels[testChannel].outgoingRepairBuffer
     check "missing-dep" in buf
-    check buf["missing-dep"].minTimeRepairReq == originalTReqAt
+    check buf["missing-dep"].minTimeRepairReq.toUnix == originalTReqAt.toUnix
     await rm2.cleanup()
 
   asyncTest "FIFO eviction state survives restart":
@@ -259,11 +260,7 @@ suite "Persistence: write → restart → read-back":
     smallCfg.maxMessageHistory = 3
     smallCfg.bloomFilterCapacity = 3
 
-    let p1 = newInMemoryPersistence(store)
-    let rm1 = newReliabilityManager(
-        participantId = "alice", config = smallCfg, persistence = p1
-      )
-      .get()
+    let rm1 = newV2Manager(store, smallCfg)
     check (await rm1.ensureChannel(testChannel)).isOk()
     # Add 5 delivered messages — first 2 should be evicted by FIFO.
     for i in 1 .. 5:
@@ -283,11 +280,7 @@ suite "Persistence: write → restart → read-back":
     await rm1.cleanup()
 
     # Restart — evicted entries must NOT come back; survivors keep order.
-    let p2 = newInMemoryPersistence(store)
-    let rm2 = newReliabilityManager(
-        participantId = "alice", config = smallCfg, persistence = p2
-      )
-      .get()
+    let rm2 = newV2Manager(store, smallCfg)
     check (await rm2.ensureChannel(testChannel)).isOk()
     let history = rm2.channels[testChannel].messageHistory
     check history.len == 3
@@ -295,7 +288,7 @@ suite "Persistence: write → restart → read-back":
     check "m2" notin history
     check "m3" in history
     check "m5" in history
-    # FIFO continues correctly after restart: adding m6 evicts m3, not a stale entry.
+    # FIFO continues correctly after restart: adding m6 evicts m3.
     let m6 = SdsMessage.init(
       messageId = "m6",
       lamportTimestamp = 6,
@@ -312,8 +305,7 @@ suite "Persistence: write → restart → read-back":
 
   asyncTest "dep-clear cascade resumes correctly across a restart":
     let store = newInMemoryStore()
-    let p1 = newInMemoryPersistence(store)
-    let rm1 = newReliabilityManager(participantId = "alice", persistence = p1).get()
+    let rm1 = newV2Manager(store)
     check (await rm1.ensureChannel(testChannel)).isOk()
 
     # Receive c (deps on b), then b (deps on a). Both must buffer.
@@ -341,9 +333,8 @@ suite "Persistence: write → restart → read-back":
     check "b" in store.incoming[testChannel]
     await rm1.cleanup()
 
-    # Restart — both still buffered, with intact missingDeps.
-    let p2 = newInMemoryPersistence(store)
-    let rm2 = newReliabilityManager(participantId = "alice", persistence = p2).get()
+    # Restart — both still buffered with intact missingDeps.
+    let rm2 = newV2Manager(store)
     check (await rm2.ensureChannel(testChannel)).isOk()
     let inbuf = await rm2.getIncomingBuffer(testChannel)
     check "c" in inbuf
@@ -364,40 +355,74 @@ suite "Persistence: write → restart → read-back":
     check "a" in history
     check "b" in history
     check "c" in history
-    # Buffer should be drained.
     let inbufFinal = await rm2.getIncomingBuffer(testChannel)
     check inbufFinal.len == 0
     await rm2.cleanup()
 
-suite "Persistence: error propagation":
-  asyncTest "loadAllForChannel failure surfaces as rePersistenceError":
+suite "Persistence (V2): failure policy":
+  asyncTest "loadChannel failure surfaces as rePersistenceError on bootstrap":
+    # Bootstrap durability is the semantic intent of getOrCreateChannel —
+    # the caller asked us to materialise a channel and we can't do that
+    # without knowing prior state. So this op DOES propagate err on load
+    # failure (PLAN §8).
     let store = newInMemoryStore()
-    store.failingOps.incl("loadAllForChannel")
+    store.failingOps.incl("loadChannel")
     let rm = newReliabilityManager(
-        participantId = "alice", persistence = newInMemoryPersistence(store)
+        participantId = "alice", persistenceV2 = newInMemoryPersistenceV2(store)
       )
       .get()
     let res = await rm.ensureChannel(testChannel)
     check res.isErr()
     check res.error == ReliabilityError.rePersistenceError
 
-  asyncTest "write failure during send surfaces as rePersistenceError":
+  asyncTest "saveChannelMeta failure during send does NOT surface — non-fatal policy":
+    # PLAN §8: persistence failures during foreground ops are logged but
+    # MUST NOT abort the op. The in-memory state is the source of truth;
+    # the next op's snapshot will re-synchronise on-disk state. This test
+    # is the inversion of the legacy "write failure surfaces as err" —
+    # the new policy is deliberate.
     let store = newInMemoryStore()
     let rm = newReliabilityManager(
-        participantId = "alice", persistence = newInMemoryPersistence(store)
+        participantId = "alice", persistenceV2 = newInMemoryPersistenceV2(store)
       )
       .get()
     check (await rm.ensureChannel(testChannel)).isOk()
-    # Make the outgoing-buffer write fail; wrapOutgoingMessage must not swallow it.
-    store.failingOps.incl("saveOutgoing")
+    store.failingOps.incl("saveChannelMeta")
     let res = await rm.wrapOutgoingMessage(@[byte(1)], "m1", testChannel)
-    check res.isErr()
-    check res.error == ReliabilityError.rePersistenceError
+    # Op succeeds: bytes were produced, protocol state is correct in
+    # memory, the FFI caller is unaffected.
+    check res.isOk()
+    # In-memory state is correct even though disk save was rejected.
+    let buf = await rm.getOutgoingBuffer(testChannel)
+    check buf.len == 1
+    check buf[0].message.messageId == "m1"
+    # Recovery: clear the failure, drive another op, disk catches up.
+    store.failingOps.excl("saveChannelMeta")
+    let res2 = await rm.wrapOutgoingMessage(@[byte(2)], "m2", testChannel)
+    check res2.isOk()
+    check "m1" in store.outgoing[testChannel]
+    check "m2" in store.outgoing[testChannel]
 
-  asyncTest "dropChannel failure during removeChannel surfaces as rePersistenceError":
+  asyncTest "updateHistory failure during send does NOT surface — non-fatal policy":
+    # Same policy applied to the history-update path.
     let store = newInMemoryStore()
     let rm = newReliabilityManager(
-        participantId = "alice", persistence = newInMemoryPersistence(store)
+        participantId = "alice", persistenceV2 = newInMemoryPersistenceV2(store)
+      )
+      .get()
+    check (await rm.ensureChannel(testChannel)).isOk()
+    store.failingOps.incl("updateHistory")
+    let res = await rm.wrapOutgoingMessage(@[byte(1)], "m1", testChannel)
+    check res.isOk()
+    check rm.channels[testChannel].messageHistory.len == 1
+
+  asyncTest "dropChannel failure during removeChannel surfaces as rePersistenceError":
+    # Durability is the semantic intent of removeChannel — the caller
+    # asked us to confirm a disk wipe. We cannot silently lie. So this op
+    # DOES propagate err on failure (PLAN §8).
+    let store = newInMemoryStore()
+    let rm = newReliabilityManager(
+        participantId = "alice", persistenceV2 = newInMemoryPersistenceV2(store)
       )
       .get()
     check (await rm.ensureChannel(testChannel)).isOk()
