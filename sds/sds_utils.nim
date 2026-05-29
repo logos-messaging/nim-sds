@@ -21,8 +21,66 @@ proc reliabilityErr*(detail: string): ReliabilityError {.gcsafe, raises: [].} =
   ## original detail is logged here — this is the single point where a
   ## persistence failure is recorded, while the enum value travels up the
   ## `Result` chain to the public API caller, who decides what to do.
+  ##
+  ## NOTE (refactor in progress): with the snapshot-based PersistenceV2
+  ## interface, most protocol ops no longer propagate persistence errors at
+  ## all — they log and continue (see PLAN §8). This helper is still used
+  ## by the legacy `Persistence` call sites during phase 2 migration, and
+  ## by the durability-intent ops (removeChannel, resetReliabilityManager)
+  ## that retain the err-on-failure semantics in the V2 world too.
   warn "persistence operation failed", detail = detail
   ReliabilityError.rePersistenceError
+
+proc snapshotMeta*(channel: ChannelContext): ChannelMeta {.gcsafe, raises: [].} =
+  ## Captures the current in-memory state of a `ChannelContext` as a
+  ## `ChannelMeta` blob, suitable for `PersistenceV2.saveChannelMeta`.
+  ##
+  ## The in-memory shape uses `Table`-keyed buffers for fast lookup;
+  ## `ChannelMeta` flattens them to `seq`s for stable wire serialization
+  ## (see PLAN §6). The bloom filter and message history are intentionally
+  ## excluded — the former is rebuilt from the latter on bootstrap, and
+  ## the latter is persisted separately via `updateHistory`.
+  result = ChannelMeta.init()
+  result.lamportTimestamp = channel.lamportTimestamp
+  for u in channel.outgoingBuffer:
+    result.outgoingBuffer.add(u)
+  for _, m in channel.incomingBuffer.pairs:
+    result.incomingBuffer.add(m)
+  for id, e in channel.outgoingRepairBuffer.pairs:
+    result.outgoingRepairBuffer.add(OutgoingRepairKV(messageId: id, entry: e))
+  for id, e in channel.incomingRepairBuffer.pairs:
+    result.incomingRepairBuffer.add(IncomingRepairKV(messageId: id, entry: e))
+
+proc trySaveMeta*(
+    rm: ReliabilityManager, channelId: SdsChannelID, channel: ChannelContext
+) {.async: (raises: []).} =
+  ## Best-effort meta snapshot save. Per PLAN §8 the protocol op does NOT
+  ## abort on persistence failure — in-memory state is the source of truth
+  ## and the next op's snapshot will re-synchronise on-disk state.
+  ##
+  ## This helper is the single point where snapshot-save failures are
+  ## logged; callers do not need to handle the Result.
+  let res = await rm.persistenceV2.saveChannelMeta(channelId, snapshotMeta(channel))
+  if res.isErr:
+    warn "snapshot save failed; in-memory state authoritative, next op will retry",
+      channelId = channelId, detail = res.error
+
+proc tryUpdateHistory*(
+    rm: ReliabilityManager,
+    channelId: SdsChannelID,
+    append: seq[SdsMessage],
+    evict: seq[SdsMessageID],
+) {.async: (raises: []).} =
+  ## Best-effort history append/evict. Skips the call entirely when both
+  ## lists are empty (see HistoryUpdate contract). Non-fatal on error,
+  ## same rationale as `trySaveMeta`.
+  if append.len == 0 and evict.len == 0:
+    return
+  let update = HistoryUpdate(append: append, evict: evict)
+  let res = await rm.persistenceV2.updateHistory(channelId, update)
+  if res.isErr:
+    warn "history update failed; in-memory log authoritative, next op will retry",
+      channelId = channelId, detail = res.error
 
 proc dropChannelFromPersistence*(
     rm: ReliabilityManager, channelId: SdsChannelID

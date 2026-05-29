@@ -520,14 +520,19 @@ proc runRepairSweep*(
   ## Exposed so it can be driven directly in tests; also invoked by periodicRepairSweep.
   ## Acquires rm.lock so the repair buffers cannot be observed mid-mutation by
   ## a concurrent wrapOutgoingMessage / unwrapReceivedMessage on another task.
-  ## A persistence error aborts the current pass (the periodic caller retries
-  ## on the next tick); non-persistence per-channel errors are logged and the
-  ## sweep continues to the next channel.
+  ##
+  ## Persistence model (PLAN_SNAPSHOT_PERSISTENCE.md phase 2.1): per-entry
+  ## removeIncomingRepair / removeOutgoingRepair calls are replaced by a
+  ## single `trySaveMeta` per *dirty* channel at the end of that channel's
+  ## sweep. A persistence failure is logged but DOES NOT abort the sweep —
+  ## in-memory state is the source of truth and the next op (or sweep tick)
+  ## will issue a fresh self-contained snapshot.
   try:
     await rm.lock.acquire()
     try:
       let now = getTime()
       for channelId, channel in rm.channels:
+        var dirty = false
         try:
           # Check incoming repair buffer for expired T_resp (time to rebroadcast)
           var toRebroadcast: seq[SdsMessageID] = @[]
@@ -538,8 +543,7 @@ proc runRepairSweep*(
           for msgId in toRebroadcast:
             let entry = channel.incomingRepairBuffer[msgId]
             channel.incomingRepairBuffer.del(msgId)
-            (await rm.persistence.removeIncomingRepair(channelId, msgId)).isOkOr:
-              return err(reliabilityErr(error))
+            dirty = true
             if not rm.onRepairReady.isNil():
               {.cast(raises: []).}:
                 rm.onRepairReady(entry.cachedMessage, channelId)
@@ -552,11 +556,16 @@ proc runRepairSweep*(
               toRemove.add(msgId)
           for msgId in toRemove:
             channel.outgoingRepairBuffer.del(msgId)
-            (await rm.persistence.removeOutgoingRepair(channelId, msgId)).isOkOr:
-              return err(reliabilityErr(error))
+            dirty = true
         except CatchableError:
           error "Error in repair sweep for channel",
             channelId = channelId, msg = getCurrentExceptionMsg()
+        # Snapshot only if this channel actually mutated. Skipping the call
+        # when clean honours the dirty-flag guard in ANALYSIS_SNAPSHOT_SAVE_POINTS
+        # — otherwise an idle node still issues 0.2 saves/s/channel just
+        # because the periodic sweep ran.
+        if dirty:
+          await rm.trySaveMeta(channelId, channel)
       ok()
     finally:
       rm.lock.release()
