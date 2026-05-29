@@ -6,16 +6,23 @@ import ./callbacks
 import ./reliability_config
 import ./channel_context
 import ./persistence
+import ./persistence_v2
 export
   sds_message_id, history_entry, callbacks, reliability_config, channel_context,
-  persistence
+  persistence, persistence_v2
 
 type ReliabilityManager* = ref object
   channels*: Table[SdsChannelID, ChannelContext]
   config*: ReliabilityConfig
   participantId*: SdsParticipantID
   persistence*: Persistence
-    ## Pluggable durability backend; defaults to a no-op when not supplied.
+    ## Legacy fine-grained persistence interface. Phase 1 of the refactor
+    ## (see PLAN_SNAPSHOT_PERSISTENCE.md) keeps this alongside `persistenceV2`
+    ## so protocol ops can be migrated one at a time.
+  persistenceV2*: PersistenceV2
+    ## Snapshot-based persistence interface. Defaults to a no-op when not
+    ## supplied. During phase 2 of the refactor, individual protocol ops
+    ## are migrated from `persistence.X` to `persistenceV2.X`.
   lock*: AsyncLock
     ## Single-threaded Chronos cooperative lock. Serializes mutators against
     ## one another at await points; the manager assumes all calls come from
@@ -38,6 +45,7 @@ proc new*(
     participantId: SdsParticipantID,
     config: ReliabilityConfig,
     persistence: Persistence = noOpPersistence(),
+    persistenceV2: PersistenceV2 = noOpPersistenceV2(),
 ): T =
   ## `participantId` is REQUIRED — it is the per-manager identity SDS-R uses
   ## to populate response groups and decide which incoming repair requests
@@ -50,6 +58,7 @@ proc new*(
     config: config,
     participantId: participantId,
     persistence: persistence,
+    persistenceV2: persistenceV2,
     lock: newAsyncLock(),
     periodicTasks: @[],
   )
