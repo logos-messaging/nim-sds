@@ -68,6 +68,7 @@ task test, "Run the test suite":
   exec "nim c -r --outdir:build tests/test_bloom.nim"
   exec "nim c -r --outdir:build tests/test_reliability.nim"
   exec "nim c -r --outdir:build tests/test_persistence.nim"
+  exec "nim c -r --outdir:build tests/test_snapshot_codec.nim"
 
 task libsdsDynamicWindows, "Generate bindings":
   let outLibNameAndExt = "libsds.dll"
