@@ -165,6 +165,14 @@ proc wrapOutgoingMessage*(
         (await rm.addToHistory(msg, channelId)).isOkOr:
           return err(error)
 
+        # Phase 2.5 (PLAN §2): one V2 meta snapshot at the end of the op
+        # captures lamport + outgoing buffer + repair buffer mutations as
+        # a single atomic blob. Non-fatal: failure is logged, the op still
+        # succeeds, the next op re-issues a fresh snapshot. Legacy
+        # fine-grained persistence calls above remain in place during the
+        # additive phase; they will be stripped in phase 2.B.
+        await rm.trySaveMeta(channelId, channel)
+
         return serializeMessage(msg)
       except CatchableError:
         error "Failed to wrap message",
@@ -265,6 +273,10 @@ proc unwrapReceivedMessage*(
       return err(reliabilityErr(error))
 
     if msg.messageId in channel.messageHistory:
+      # Duplicate: no state change beyond the repair-buffer cleanup above.
+      # Per ANALYSIS_SNAPSHOT_SAVE_POINTS, still save (those buffer dels
+      # are mutations). Persist the meta and return.
+      await rm.trySaveMeta(channelId, channel)
       return ok((msg.content, @[], channelId))
 
     channel.bloomFilter.add(msg.messageId)
@@ -374,6 +386,12 @@ proc unwrapReceivedMessage*(
             ).isOkOr:
               return err(reliabilityErr(error))
 
+    # Phase 2.5: single V2 meta snapshot covers ALL three paths
+    # (deps-met-fresh, deps-met-buffered, missing-deps). Buffer mutations,
+    # lamport update, repair-buffer cleanup, and ack-driven outgoing buffer
+    # shrinkage all land atomically on disk. Non-fatal per PLAN §8.
+    await rm.trySaveMeta(channelId, channel)
+
     return ok((msg.content, missingDeps, channelId))
   except CatchableError:
     error "Failed to unwrap message", msg = getCurrentExceptionMsg()
@@ -416,6 +434,12 @@ proc markDependenciesMet*(
 
     (await rm.processIncomingBuffer(channelId)).isOkOr:
       return err(error)
+
+    # Phase 2.7: single V2 meta snapshot at op end. processIncomingBuffer
+    # may have cascaded through several unblocked deliveries; all those
+    # incoming/repair-buffer mutations land in this one save.
+    if channelId in rm.channels:
+      await rm.trySaveMeta(channelId, rm.channels[channelId])
     return ok()
   except CatchableError:
     error "Failed to mark dependencies as met",
