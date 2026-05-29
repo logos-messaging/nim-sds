@@ -8,17 +8,13 @@ proc newReliabilityManager*(
     participantId: SdsParticipantID,
     config: ReliabilityConfig = defaultConfig(),
     persistence: Persistence = noOpPersistence(),
-    persistenceV2: PersistenceV2 = noOpPersistenceV2(),
 ): Result[ReliabilityManager, ReliabilityError] =
   ## Creates a new multi-channel ReliabilityManager.
   ## `participantId` is REQUIRED (see `ReliabilityManager.new`).
-  ## `persistence` is the legacy fine-grained backend; defaults to a no-op.
-  ## `persistenceV2` is the snapshot-based backend (target interface; see
-  ## PLAN_SNAPSHOT_PERSISTENCE.md). Also defaults to a no-op. During the
-  ## phased refactor both backends coexist; phase 3 deletes the legacy
-  ## interface and renames `persistenceV2` to `persistence`.
+  ## `persistence` defaults to a no-op backend; supply a real one to durably
+  ## store SDS state across restarts.
   try:
-    let rm = ReliabilityManager.new(participantId, config, persistence, persistenceV2)
+    let rm = ReliabilityManager.new(participantId, config, persistence)
     return ok(rm)
   except Exception:
     error "Failed to create ReliabilityManager", msg = getCurrentExceptionMsg()

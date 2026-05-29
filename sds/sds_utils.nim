@@ -22,18 +22,17 @@ proc reliabilityErr*(detail: string): ReliabilityError {.gcsafe, raises: [].} =
   ## persistence failure is recorded, while the enum value travels up the
   ## `Result` chain to the public API caller, who decides what to do.
   ##
-  ## NOTE (refactor in progress): with the snapshot-based PersistenceV2
-  ## interface, most protocol ops no longer propagate persistence errors at
-  ## all — they log and continue (see PLAN §8). This helper is still used
-  ## by the legacy `Persistence` call sites during phase 2 migration, and
-  ## by the durability-intent ops (removeChannel, resetReliabilityManager)
-  ## that retain the err-on-failure semantics in the V2 world too.
+  ## With the snapshot-based Persistence interface, most protocol ops no
+  ## longer propagate persistence errors at all — they log and continue
+  ## (see PLAN_SNAPSHOT_PERSISTENCE.md §8). This helper is still used by
+  ## the durability-intent ops (removeChannel, resetReliabilityManager,
+  ## getOrCreateChannel) that retain err-on-failure semantics.
   warn "persistence operation failed", detail = detail
   ReliabilityError.rePersistenceError
 
 proc snapshotMeta*(channel: ChannelContext): ChannelMeta {.gcsafe, raises: [].} =
   ## Captures the current in-memory state of a `ChannelContext` as a
-  ## `ChannelMeta` blob, suitable for `PersistenceV2.saveChannelMeta`.
+  ## `ChannelMeta` blob, suitable for `Persistence.saveChannelMeta`.
   ##
   ## The in-memory shape uses `Table`-keyed buffers for fast lookup;
   ## `ChannelMeta` flattens them to `seq`s for stable wire serialization
@@ -60,7 +59,7 @@ proc trySaveMeta*(
   ##
   ## This helper is the single point where snapshot-save failures are
   ## logged; callers do not need to handle the Result.
-  let res = await rm.persistenceV2.saveChannelMeta(channelId, snapshotMeta(channel))
+  let res = await rm.persistence.saveChannelMeta(channelId, snapshotMeta(channel))
   if res.isErr:
     warn "snapshot save failed; in-memory state authoritative, next op will retry",
       channelId = channelId, detail = res.error
@@ -77,7 +76,7 @@ proc tryUpdateHistory*(
   if append.len == 0 and evict.len == 0:
     return
   let update = HistoryUpdate(append: append, evict: evict)
-  let res = await rm.persistenceV2.updateHistory(channelId, update)
+  let res = await rm.persistence.updateHistory(channelId, update)
   if res.isErr:
     warn "history update failed; in-memory log authoritative, next op will retry",
       channelId = channelId, detail = res.error
@@ -92,7 +91,7 @@ proc dropChannelFromPersistence*(
   ## Phase 2D: uses `persistenceV2.dropChannel`. This op DOES propagate
   ## err on failure (durability is the semantic intent — the caller asked
   ## us to confirm a disk wipe; we cannot silently lie). See PLAN §8.
-  (await rm.persistenceV2.dropChannel(channelId)).isOkOr:
+  (await rm.persistence.dropChannel(channelId)).isOkOr:
     return err(reliabilityErr(error))
   ok()
 
@@ -273,7 +272,7 @@ proc getRecentHistoryEntries*(
             # Phase 2B: best-effort hint persistence via V2. Non-fatal —
             # hints are an optimisation; a missing hint just means the
             # peer falls back to slower retrieval.
-            let hintRes = await rm.persistenceV2.setRetrievalHint(
+            let hintRes = await rm.persistence.setRetrievalHint(
               msgId, entry.retrievalHint
             )
             if hintRes.isErr:
@@ -380,7 +379,7 @@ proc getOrCreateChannel*(
           rm.config.bloomFilterCapacity, rm.config.bloomFilterErrorRate
         )
       )
-      let data = (await rm.persistenceV2.loadChannel(channelId)).valueOr:
+      let data = (await rm.persistence.loadChannel(channelId)).valueOr:
         return err(reliabilityErr(error))
       channel.lamportTimestamp = data.meta.lamportTimestamp
       # Backend contract: messageHistory MUST be ordered oldest-first.

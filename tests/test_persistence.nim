@@ -1,7 +1,7 @@
 import results, std/[tables, sets, times]
 import sds
 import ./async_unittest
-import ./in_memory_persistence_v2
+import ./in_memory_persistence
 
 converter toParticipantID(s: string): SdsParticipantID =
   s.SdsParticipantID
@@ -17,11 +17,11 @@ proc newV2Manager(
   newReliabilityManager(
       participantId = "alice",
       config = config,
-      persistenceV2 = newInMemoryPersistenceV2(store),
+      persistence = newInMemoryPersistence(store),
     )
     .get()
 
-suite "Persistence (V2): write → restart → read-back":
+suite "Persistence: write → restart → read-back":
   asyncTest "outgoing buffer survives restart":
     let store = newInMemoryStore()
     let rm1 = newV2Manager(store)
@@ -125,7 +125,7 @@ suite "Persistence (V2): write → restart → read-back":
     check testChannel notin store.incomingRepair
     await rm.cleanup()
 
-  asyncTest "noOpPersistenceV2 keeps existing manager working":
+  asyncTest "noOpPersistence keeps existing manager working":
     let rm = newReliabilityManager(participantId = "alice").get()
       # default no-op persistence (both legacy and V2)
     check (await rm.ensureChannel(testChannel)).isOk()
@@ -359,7 +359,7 @@ suite "Persistence (V2): write → restart → read-back":
     check inbufFinal.len == 0
     await rm2.cleanup()
 
-suite "Persistence (V2): failure policy":
+suite "Persistence: failure policy":
   asyncTest "loadChannel failure surfaces as rePersistenceError on bootstrap":
     # Bootstrap durability is the semantic intent of getOrCreateChannel —
     # the caller asked us to materialise a channel and we can't do that
@@ -368,7 +368,7 @@ suite "Persistence (V2): failure policy":
     let store = newInMemoryStore()
     store.failingOps.incl("loadChannel")
     let rm = newReliabilityManager(
-        participantId = "alice", persistenceV2 = newInMemoryPersistenceV2(store)
+        participantId = "alice", persistence = newInMemoryPersistence(store)
       )
       .get()
     let res = await rm.ensureChannel(testChannel)
@@ -383,7 +383,7 @@ suite "Persistence (V2): failure policy":
     # the new policy is deliberate.
     let store = newInMemoryStore()
     let rm = newReliabilityManager(
-        participantId = "alice", persistenceV2 = newInMemoryPersistenceV2(store)
+        participantId = "alice", persistence = newInMemoryPersistence(store)
       )
       .get()
     check (await rm.ensureChannel(testChannel)).isOk()
@@ -407,7 +407,7 @@ suite "Persistence (V2): failure policy":
     # Same policy applied to the history-update path.
     let store = newInMemoryStore()
     let rm = newReliabilityManager(
-        participantId = "alice", persistenceV2 = newInMemoryPersistenceV2(store)
+        participantId = "alice", persistence = newInMemoryPersistence(store)
       )
       .get()
     check (await rm.ensureChannel(testChannel)).isOk()
@@ -422,7 +422,7 @@ suite "Persistence (V2): failure policy":
     # DOES propagate err on failure (PLAN §8).
     let store = newInMemoryStore()
     let rm = newReliabilityManager(
-        participantId = "alice", persistenceV2 = newInMemoryPersistenceV2(store)
+        participantId = "alice", persistence = newInMemoryPersistence(store)
       )
       .get()
     check (await rm.ensureChannel(testChannel)).isOk()
