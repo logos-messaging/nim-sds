@@ -1,4 +1,4 @@
-import std/tables
+import std/[sets, tables]
 import ./sds_message_id
 import ./sds_message
 import ./rolling_bloom_filter
@@ -23,6 +23,31 @@ type ChannelContext* = ref object
   ## SDS-R buffers
   outgoingRepairBuffer*: Table[SdsMessageID, OutgoingRepairEntry]
   incomingRepairBuffer*: Table[SdsMessageID, IncomingRepairEntry]
+  ## R2 pending-write queue for history (see PLAN §8 + PR #72 review).
+  ## When `updateHistory` fails, the failed (append, evict) batch is parked
+  ## here and merged with the next op's batch on the next `tryUpdateHistory`
+  ## call. Cleared on successful flush. NOT persisted — runtime-only state;
+  ## on a crash the in-memory `messageHistory` is also lost and the next
+  ## `loadChannel` brings whatever made it to disk.
+  ##
+  ## INVARIANT (relied on by the flush): every id in `pendingHistoryAppends`
+  ## is also present in `messageHistory`. The full `SdsMessage` is NOT
+  ## stored here — it is looked up from `messageHistory` at flush time.
+  ## Storing only the id avoids the ~1 KB-per-entry duplication of
+  ## SdsMessage that an OrderedTable would carry.
+  pendingHistoryAppends*: OrderedSet[SdsMessageID]
+    ## Pending appends, in insertion order so the on-disk log stays
+    ## oldest-first across retries.
+  pendingHistoryEvicts*: HashSet[SdsMessageID]
+    ## Pending evictions. Set semantics — evicting the same id twice is a
+    ## no-op.
+    ##
+    ## Merge rule with `pendingHistoryAppends`: **latest operation wins.**
+    ## Queuing an append cancels any pending evict for the same id;
+    ## queuing an evict cancels any pending append. This handles the
+    ## "evict-then-re-add" sequence correctly (e.g. SDS-R repair
+    ## re-delivers a message that was previously evicted while the
+    ## backend was unreachable).
 
 proc new*(T: type ChannelContext, bloomFilter: RollingBloomFilter): T =
   return T(
@@ -33,4 +58,6 @@ proc new*(T: type ChannelContext, bloomFilter: RollingBloomFilter): T =
     incomingBuffer: initTable[SdsMessageID, IncomingMessage](),
     outgoingRepairBuffer: initTable[SdsMessageID, OutgoingRepairEntry](),
     incomingRepairBuffer: initTable[SdsMessageID, IncomingRepairEntry](),
+    pendingHistoryAppends: initOrderedSet[SdsMessageID](),
+    pendingHistoryEvicts: initHashSet[SdsMessageID](),
   )

@@ -153,19 +153,18 @@ proc wrapOutgoingMessage*(
         # Phase 2B: in-memory append only; op-end trySaveMeta covers it.
 
         channel.bloomFilter.add(msg.messageId)
-        # The full SdsMessage carries senderId and content, so a single
-        # addToHistory replaces the old triple-write to messageHistory,
-        # messageCache, and messageSenders.
+        # addToHistory mutates in-memory state and queues the append/evict
+        # on the channel's pending-history queue; persistence happens
+        # ONCE at op end via tryUpdateHistory.
         (await rm.addToHistory(msg, channelId)).isOkOr:
           return err(error)
 
-        # Phase 2.5 (PLAN §2): one V2 meta snapshot at the end of the op
-        # captures lamport + outgoing buffer + repair buffer mutations as
-        # a single atomic blob. Non-fatal: failure is logged, the op still
-        # succeeds, the next op re-issues a fresh snapshot. Legacy
-        # fine-grained persistence calls above remain in place during the
-        # additive phase; they will be stripped in phase 2.B.
+        # Op end: one meta snapshot + one history flush, paired under the
+        # lock per the Persistence atomicity contract. tryUpdateHistory
+        # flushes the channel's pending queue (this op's mutations PLUS
+        # any leftovers from a prior failed write — R2 retry).
         await rm.trySaveMeta(channelId, channel)
+        await rm.tryUpdateHistory(channelId)
 
         return serializeMessage(msg)
       except CatchableError:
@@ -182,6 +181,11 @@ proc wrapOutgoingMessage*(
 proc processIncomingBuffer(
     rm: ReliabilityManager, channelId: SdsChannelID
 ): Future[Result[void, ReliabilityError]] {.async: (raises: []).} =
+  ## Cascade-deliver any buffered messages whose dependencies are now met.
+  ## Each `addToHistory` call queues its append/evict on the channel's
+  ## pending-history queue; the *caller* (a public protocol op) issues
+  ## ONE `tryUpdateHistory` at op end to flush the whole cascade in a
+  ## single round-trip.
   try:
     await rm.lock.acquire()
     try:
@@ -261,10 +265,11 @@ proc unwrapReceivedMessage*(
     channel.incomingRepairBuffer.del(msg.messageId)
 
     if msg.messageId in channel.messageHistory:
-      # Duplicate: no state change beyond the repair-buffer cleanup above.
-      # Per ANALYSIS_SNAPSHOT_SAVE_POINTS, still save (those buffer dels
-      # are mutations). Persist the meta and return.
+      # Duplicate: no history change. Still flush the meta (repair-buffer
+      # dels above are mutations) and the history queue (any pending
+      # entries from a prior failed write get retried here too).
       await rm.trySaveMeta(channelId, channel)
+      await rm.tryUpdateHistory(channelId)
       return ok((msg.content, @[], channelId))
 
     channel.bloomFilter.add(msg.messageId)
@@ -321,13 +326,12 @@ proc unwrapReceivedMessage*(
         (await rm.addToHistory(msg, channelId)).isOkOr:
           return err(error)
         # Unblock any buffered messages that were waiting on this one.
-        # Phase 2B: in-memory dep-set shrink only; op-end trySaveMeta and
-        # the subsequent processIncomingBuffer cascade (which is also
-        # in-memory only) leave the final state on the in-memory side, and
-        # the op-end trySaveMeta snapshots it.
         for pendingId, entry in channel.incomingBuffer:
           if msg.messageId in entry.missingDeps:
             channel.incomingBuffer[pendingId].missingDeps.excl(msg.messageId)
+        # Cascade — addToHistory calls within processIncomingBuffer queue
+        # their entries on the channel's pending-history queue, flushed
+        # by the single op-end tryUpdateHistory below.
         (await rm.processIncomingBuffer(channelId)).isOkOr:
           return err(error)
         if not rm.onMessageReady.isNil():
@@ -356,11 +360,11 @@ proc unwrapReceivedMessage*(
             # Phase 2B: in-memory insert only; op-end trySaveMeta covers it.
             channel.outgoingRepairBuffer[dep.messageId] = outEntry
 
-    # Phase 2.5: single V2 meta snapshot covers ALL three paths
-    # (deps-met-fresh, deps-met-buffered, missing-deps). Buffer mutations,
-    # lamport update, repair-buffer cleanup, and ack-driven outgoing buffer
-    # shrinkage all land atomically on disk. Non-fatal per PLAN §8.
+    # Op end: one meta snapshot + one history flush, paired under the
+    # lock. The flush is the single point where any cascade-driven
+    # appends/evicts hit disk (R2 queue absorbs failures).
     await rm.trySaveMeta(channelId, channel)
+    await rm.tryUpdateHistory(channelId)
 
     return ok((msg.content, missingDeps, channelId))
   except CatchableError:
@@ -394,11 +398,12 @@ proc markDependenciesMet*(
     (await rm.processIncomingBuffer(channelId)).isOkOr:
       return err(error)
 
-    # Phase 2.7: single V2 meta snapshot at op end. processIncomingBuffer
-    # may have cascaded through several unblocked deliveries; all those
-    # incoming/repair-buffer mutations land in this one save.
+    # Op end: one meta snapshot + one history flush, paired under the lock.
+    # The flush covers any cascade-driven appends/evicts queued during
+    # processIncomingBuffer.
     if channelId in rm.channels:
       await rm.trySaveMeta(channelId, rm.channels[channelId])
+      await rm.tryUpdateHistory(channelId)
     return ok()
   except CatchableError:
     error "Failed to mark dependencies as met",
@@ -599,6 +604,8 @@ proc resetReliabilityManager*(
           channel.incomingBuffer.clear()
           channel.outgoingRepairBuffer.clear()
           channel.incomingRepairBuffer.clear()
+          channel.pendingHistoryAppends.clear()
+          channel.pendingHistoryEvicts.clear()
           channel.bloomFilter = RollingBloomFilter.init(
             rm.config.bloomFilterCapacity, rm.config.bloomFilterErrorRate
           )

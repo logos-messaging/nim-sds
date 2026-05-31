@@ -1,4 +1,4 @@
-import std/[times, tables, sequtils, hashes]
+import std/[times, tables, sequtils, sets, hashes]
 import chronos, chronicles, results
 import ./rolling_bloom_filter
 import
@@ -64,22 +64,95 @@ proc trySaveMeta*(
     warn "snapshot save failed; in-memory state authoritative, next op will retry",
       channelId = channelId, detail = res.error
 
+proc queueHistoryAppend*(channel: ChannelContext, msgId: SdsMessageID) =
+  ## Push an append onto the pending history queue. Only the id is
+  ## stored — the full SdsMessage is looked up from `messageHistory` at
+  ## flush time (invariant: every queued id is present in messageHistory).
+  ##
+  ## Merge rule: **latest operation wins.** Cancels any pending evict for
+  ## the same id, then adds. Handles the evict-then-re-add sequence
+  ## correctly (e.g. SDS-R repair re-delivers a previously-evicted
+  ## message while the backend is unreachable).
+  channel.pendingHistoryEvicts.excl(msgId)
+  channel.pendingHistoryAppends.incl(msgId)
+
+proc queueHistoryEvict*(channel: ChannelContext, msgId: SdsMessageID) =
+  ## Push an evict onto the pending history queue. Merge rule symmetric
+  ## with `queueHistoryAppend`: cancels any pending append for the same
+  ## id (the just-evicted message no longer needs to be persisted as an
+  ## addition), then adds to the evict set.
+  channel.pendingHistoryAppends.excl(msgId)
+  channel.pendingHistoryEvicts.incl(msgId)
+
 proc tryUpdateHistory*(
-    rm: ReliabilityManager,
-    channelId: SdsChannelID,
-    append: seq[SdsMessage],
-    evict: seq[SdsMessageID],
+    rm: ReliabilityManager, channelId: SdsChannelID
 ) {.async: (raises: []).} =
-  ## Best-effort history append/evict. Skips the call entirely when both
-  ## lists are empty (see HistoryUpdate contract). Non-fatal on error,
-  ## same rationale as `trySaveMeta`.
-  if append.len == 0 and evict.len == 0:
-    return
-  let update = HistoryUpdate(append: append, evict: evict)
-  let res = await rm.persistence.updateHistory(channelId, update)
-  if res.isErr:
-    warn "history update failed; in-memory log authoritative, next op will retry",
-      channelId = channelId, detail = res.error
+  ## Flush the channel's pending history queue to disk.
+  ##
+  ## The pending queue (`channel.pendingHistoryAppends` /
+  ## `pendingHistoryEvicts`) plays a DUAL role — and that's deliberate:
+  ##   1. **Per-op accumulator.** Every `addToHistory` call pushes its
+  ##      mutation into this queue but does NOT persist. A protocol op
+  ##      that invokes `addToHistory` N times (e.g. a
+  ##      `processIncomingBuffer` cascade) leaves N entries queued and
+  ##      issues exactly ONE `tryUpdateHistory` at op end — one
+  ##      round-trip per op regardless of cascade depth. This fixes PR
+  ##      #72 review comments #2 and #3.
+  ##   2. **R2 retry queue.** If the flush fails, the queue is NOT
+  ##      cleared. The next op's `addToHistory` calls add to it; the
+  ##      next op's `tryUpdateHistory` retries the merged batch. This
+  ##      fixes PR #72 review comment #1 (delta loss).
+  ##
+  ## Both roles share the same data structure because they want the same
+  ## semantics: "merge everything pending into one batch and try to
+  ## flush". Failure is non-fatal at the FFI boundary (PLAN §8) — the
+  ## in-memory state is the source of truth.
+  ##
+  ## Callers MUST invoke this once at the end of every protocol op (even
+  ## when this op had no history changes) — otherwise a previously-failed
+  ## batch could sit on the queue indefinitely.
+  var channel: ChannelContext
+  try:
+    if channelId notin rm.channels:
+      return
+    channel = rm.channels[channelId]
+  except KeyError:
+    return # checked `in` above; unreachable, but tables can raise per spec
+
+  if channel.pendingHistoryAppends.len == 0 and
+      channel.pendingHistoryEvicts.len == 0:
+    return # nothing to flush — no round-trip cost
+
+  var batch = HistoryUpdate.init()
+  # Look up each queued id in messageHistory (source of truth). The
+  # invariant on pendingHistoryAppends guarantees the id is present;
+  # the defensive check below logs any violation rather than crashing.
+  for id in channel.pendingHistoryAppends:
+    try:
+      if id in channel.messageHistory:
+        batch.append.add(channel.messageHistory[id])
+      else:
+        warn "queued append id missing from messageHistory; invariant violated, skipping",
+          channelId = channelId, msgId = id
+    except KeyError:
+      discard # unreachable — `in` was true
+  for id in channel.pendingHistoryEvicts:
+    batch.evict.add(id)
+
+  let res = await rm.persistence.updateHistory(channelId, batch)
+  if res.isOk:
+    channel.pendingHistoryAppends.clear()
+    channel.pendingHistoryEvicts.clear()
+  else:
+    warn "history update failed; queued for retry on next op",
+      channelId = channelId,
+      pendingAppends = channel.pendingHistoryAppends.len,
+      pendingEvicts = channel.pendingHistoryEvicts.len,
+      detail = res.error
+    if channel.pendingHistoryAppends.len > rm.config.maxMessageHistory:
+      warn "pending history queue exceeds maxMessageHistory; backend may be stuck",
+        channelId = channelId,
+        pendingAppends = channel.pendingHistoryAppends.len
 
 proc dropChannelFromPersistence*(
     rm: ReliabilityManager, channelId: SdsChannelID
@@ -119,6 +192,8 @@ proc cleanup*(rm: ReliabilityManager) {.async: (raises: []).} =
         channel.messageHistory.clear()
         channel.outgoingRepairBuffer.clear()
         channel.incomingRepairBuffer.clear()
+        channel.pendingHistoryAppends.clear()
+        channel.pendingHistoryEvicts.clear()
       rm.channels.clear()
     finally:
       rm.lock.release()
@@ -142,29 +217,30 @@ proc cleanBloomFilter*(
 proc addToHistory*(
     rm: ReliabilityManager, msg: SdsMessage, channelId: SdsChannelID
 ): Future[Result[void, ReliabilityError]] {.async: (raises: []).} =
-  ## Inserts a delivered message into the channel's history map and evicts the
-  ## eldest entries when the bound is exceeded. The full SdsMessage is kept so
-  ## senderId is available for downstream causal-history population and the
-  ## bytes can be re-serialized on demand to answer SDS-R repair requests.
-  ## Persistence (phase 2B): mutations are batched into ONE V2
-  ## `tryUpdateHistory` call at the end of this proc (append the new
-  ## message + evict whatever rolled past `maxMessageHistory`). Failure is
-  ## non-fatal: in-memory state is the source of truth, the next op's
-  ## history update re-synchronises disk. Legacy per-row `appendLogEntry`
-  ## / `removeLogEntry` calls are removed.
+  ## Inserts a delivered message into the channel's history map, evicts
+  ## the eldest entries past `maxMessageHistory`, and queues the resulting
+  ## append+evict on the channel's pending-history queue. Does NOT issue
+  ## a persistence call — the caller's op-end `tryUpdateHistory` flushes
+  ## the queue in one round-trip.
+  ##
+  ## A cascade of N unblocked messages (e.g. `processIncomingBuffer`)
+  ## therefore leaves N entries queued and triggers ONE persistence call
+  ## at op end, not N. Fixes PR #72 review #2/#3.
+  ##
+  ## Direct callers (tests, ad-hoc) that want the disk write to land
+  ## immediately should follow this with `await rm.tryUpdateHistory(channelId)`.
   try:
     if channelId in rm.channels:
       let channel = rm.channels[channelId]
       channel.messageHistory[msg.messageId] = msg
-      var evicted: seq[SdsMessageID] = @[]
+      queueHistoryAppend(channel, msg.messageId)
       while channel.messageHistory.len > rm.config.maxMessageHistory:
         var firstKey: SdsMessageID
         for k in channel.messageHistory.keys:
           firstKey = k
           break
         channel.messageHistory.del(firstKey)
-        evicted.add(firstKey)
-      await rm.tryUpdateHistory(channelId, @[msg], evicted)
+        queueHistoryEvict(channel, firstKey)
     ok()
   except CatchableError:
     error "Failed to add to history",
@@ -434,6 +510,8 @@ proc removeChannel*(
           channel.messageHistory.clear()
           channel.outgoingRepairBuffer.clear()
           channel.incomingRepairBuffer.clear()
+          channel.pendingHistoryAppends.clear()
+          channel.pendingHistoryEvicts.clear()
           rm.channels.del(channelId)
         return ok()
       except CatchableError:

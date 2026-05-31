@@ -72,6 +72,10 @@ suite "Persistence: write → restart → read-back":
       senderId = "alice",
     )
     check (await rm1.addToHistory(msg, testChannel)).isOk()
+    # New design: addToHistory queues; tryUpdateHistory flushes. Tests
+    # that drive addToHistory directly must follow with an explicit flush
+    # (in production, the public protocol op issues the flush at op end).
+    await rm1.tryUpdateHistory(testChannel)
     check store.log[testChannel].len == 1
     await rm1.cleanup()
 
@@ -274,6 +278,7 @@ suite "Persistence: write → restart → read-back":
         senderId = "alice",
       )
       check (await rm1.addToHistory(m, testChannel)).isOk()
+      await rm1.tryUpdateHistory(testChannel)
     check store.log[testChannel].len == 3
     check "m1" notin store.log[testChannel]
     check "m2" notin store.log[testChannel]
@@ -299,6 +304,7 @@ suite "Persistence: write → restart → read-back":
       senderId = "alice",
     )
     check (await rm2.addToHistory(m6, testChannel)).isOk()
+    await rm2.tryUpdateHistory(testChannel)
     check "m3" notin store.log[testChannel]
     check "m6" in store.log[testChannel]
     await rm2.cleanup()
@@ -415,6 +421,124 @@ suite "Persistence: failure policy":
     let res = await rm.wrapOutgoingMessage(@[byte(1)], "m1", testChannel)
     check res.isOk()
     check rm.channels[testChannel].messageHistory.len == 1
+
+  asyncTest "updateHistory failure is retried via R2 pending-write queue":
+    # Fix for PR #72 review comment #1: a failed history write must not
+    # silently drop the delta. The pending-write queue parks failed
+    # entries and retries them on the next op end. Once the backend
+    # recovers, the disk catches up automatically — no caller action
+    # needed, no err surfaced.
+    let store = newInMemoryStore()
+    let rm = newReliabilityManager(
+        participantId = "alice", persistence = newInMemoryPersistence(store)
+      )
+      .get()
+    check (await rm.ensureChannel(testChannel)).isOk()
+
+    # Failure 1: send m1 while updateHistory is broken.
+    store.failingOps.incl("updateHistory")
+    discard await rm.wrapOutgoingMessage(@[byte(1)], "m1", testChannel)
+    # In-memory state is correct; disk has no log entry for m1 yet.
+    check rm.channels[testChannel].messageHistory.len == 1
+    check testChannel notin store.log or "m1" notin store.log[testChannel]
+    # Pending queue should be holding m1 for retry.
+    check rm.channels[testChannel].pendingHistoryAppends.len == 1
+    check "m1" in rm.channels[testChannel].pendingHistoryAppends
+
+    # Failure 2: send m2 while still broken. Pending should now hold both.
+    discard await rm.wrapOutgoingMessage(@[byte(2)], "m2", testChannel)
+    check rm.channels[testChannel].pendingHistoryAppends.len == 2
+    check "m1" in rm.channels[testChannel].pendingHistoryAppends
+    check "m2" in rm.channels[testChannel].pendingHistoryAppends
+    # Still nothing on disk.
+    check testChannel notin store.log or store.log[testChannel].len == 0
+
+    # Recovery: clear the backend failure, send m3. The op-end flush
+    # should drain ALL pending entries plus the new one in a single call.
+    store.failingOps.excl("updateHistory")
+    discard await rm.wrapOutgoingMessage(@[byte(3)], "m3", testChannel)
+    check rm.channels[testChannel].pendingHistoryAppends.len == 0
+    check "m1" in store.log[testChannel]
+    check "m2" in store.log[testChannel]
+    check "m3" in store.log[testChannel]
+
+  asyncTest "evict-then-re-add merge rule preserves the re-added message on disk":
+    # Regression: with the original "evict-wins" merge rule, a message
+    # re-added (e.g. via SDS-R repair) after being evicted during a
+    # backend outage would have its append silently dropped because the
+    # id was still in pendingHistoryEvicts. The "latest-wins" rule fixes
+    # this — the re-add cancels the pending evict.
+    let store = newInMemoryStore()
+    var smallCfg = defaultConfig()
+    smallCfg.maxMessageHistory = 2
+    smallCfg.bloomFilterCapacity = 2
+    let rm = newReliabilityManager(
+        participantId = "alice",
+        config = smallCfg,
+        persistence = newInMemoryPersistence(store),
+      )
+      .get()
+    check (await rm.ensureChannel(testChannel)).isOk()
+
+    proc mkMsg(id: string, ts: int64): SdsMessage =
+      SdsMessage.init(
+        messageId = id,
+        lamportTimestamp = ts,
+        causalHistory = @[],
+        channelId = testChannel,
+        content = @[byte(ts)],
+        bloomFilter = @[],
+        senderId = "alice",
+      )
+
+    # Break the backend, then fill the channel past maxMessageHistory so
+    # m1 gets evicted while we have no successful flush yet.
+    store.failingOps.incl("updateHistory")
+    check (await rm.addToHistory(mkMsg("m1", 1), testChannel)).isOk()
+    await rm.tryUpdateHistory(testChannel) # fails — m1 queued
+    check (await rm.addToHistory(mkMsg("m2", 2), testChannel)).isOk()
+    check (await rm.addToHistory(mkMsg("m3", 3), testChannel)).isOk()
+    # m1 evicted by FIFO; pending should now have m2,m3 as appends and m1 as evict.
+    check "m1" notin rm.channels[testChannel].messageHistory
+    check "m1" in rm.channels[testChannel].pendingHistoryEvicts
+    check "m1" notin rm.channels[testChannel].pendingHistoryAppends
+
+    # SDS-R-style re-delivery of m1. With latest-wins, this MUST cancel
+    # the pending evict and re-queue the append.
+    check (await rm.addToHistory(mkMsg("m1", 4), testChannel)).isOk()
+    check "m1" in rm.channels[testChannel].messageHistory
+    check "m1" notin rm.channels[testChannel].pendingHistoryEvicts
+    check "m1" in rm.channels[testChannel].pendingHistoryAppends
+
+    # Recover and flush. m1 must land on disk.
+    store.failingOps.excl("updateHistory")
+    await rm.tryUpdateHistory(testChannel)
+    check "m1" in store.log[testChannel]
+
+  asyncTest "pending queue survives idle ops (flush on next op without history changes)":
+    # Even if the next op makes no history changes of its own, it must
+    # still flush the pending queue at op end — otherwise a failed write
+    # could sit indefinitely if the application only ever does
+    # mark-deps-met-style ops after a failure.
+    let store = newInMemoryStore()
+    let rm = newReliabilityManager(
+        participantId = "alice", persistence = newInMemoryPersistence(store)
+      )
+      .get()
+    check (await rm.ensureChannel(testChannel)).isOk()
+
+    # Stage a pending entry by failing one send.
+    store.failingOps.incl("updateHistory")
+    discard await rm.wrapOutgoingMessage(@[byte(1)], "m1", testChannel)
+    check rm.channels[testChannel].pendingHistoryAppends.len == 1
+
+    # Now clear the failure and drive a markDependenciesMet on a no-op
+    # input — it has no history changes of its own but its op-end flush
+    # must still retry the queue.
+    store.failingOps.excl("updateHistory")
+    check (await rm.markDependenciesMet(@["nonexistent"], testChannel)).isOk()
+    check rm.channels[testChannel].pendingHistoryAppends.len == 0
+    check "m1" in store.log[testChannel]
 
   asyncTest "dropChannel failure during removeChannel surfaces as rePersistenceError":
     # Durability is the semantic intent of removeChannel — the caller
