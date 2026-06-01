@@ -106,7 +106,7 @@ proc wrapOutgoingMessage*(
           return err(error)
 
         let bfResult = serializeBloomFilter(channel.bloomFilter.filter)
-        if bfResult.isErr:
+        if bfResult.isErr():
           error "Failed to serialize bloom filter", channelId = channelId
           return err(ReliabilityError.reSerializationError)
 
