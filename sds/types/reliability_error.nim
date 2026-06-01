@@ -5,3 +5,4 @@ type ReliabilityError* {.pure.} = enum
   reSerializationError
   reDeserializationError
   reMessageTooLarge
+  rePersistenceError ## A persistence backend operation (read or write) failed.

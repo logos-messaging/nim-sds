@@ -1,7 +1,7 @@
 import strutils, os
 
 # Package
-version = "0.2.4"
+version = "0.3.0"
 author = "Logos Messaging Team"
 description = "E2E Scalable Data Sync API"
 license = "MIT"
@@ -68,6 +68,7 @@ task test, "Run the test suite":
   exec "nim c -r --outdir:build tests/test_bloom.nim"
   exec "nim c -r --outdir:build tests/test_reliability.nim"
   exec "nim c -r --outdir:build tests/test_persistence.nim"
+  exec "nim c -r --outdir:build tests/test_snapshot_codec.nim"
 
 task libsdsDynamicWindows, "Generate bindings":
   let outLibNameAndExt = "libsds.dll"
