@@ -313,6 +313,20 @@
       "checksums": {
         "sha1": "09e1b2fdad55b973724d61227971afc0df0b7a81"
       }
+    },
+    "ffi": {
+      "version": "#v0.1.4",
+      "vcsRevision": "fb25f069d2dfae2b543d79d2c1a81f197de22a2b",
+      "url": "https://github.com/logos-messaging/nim-ffi",
+      "downloadMethod": "git",
+      "dependencies": [
+        "chronos",
+        "chronicles",
+        "taskpools"
+      ],
+      "checksums": {
+        "sha1": "4a5d4020a40106fa2a698d5fe975b9a8ba961f91"
+      }
     }
   },
   "tasks": {}

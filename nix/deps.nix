@@ -164,4 +164,11 @@
     fetchSubmodules = true;
   };
 
+  ffi = pkgs.fetchgit {
+    url = "https://github.com/logos-messaging/nim-ffi";
+    rev = "fb25f069d2dfae2b543d79d2c1a81f197de22a2b";
+    sha256 = "0zkjnrm2yjlw27q99kv2x8ll61mbz4nr0cvmyq0csydh43c08k0p";
+    fetchSubmodules = true;
+  };
+
 }
