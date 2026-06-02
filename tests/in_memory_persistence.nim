@@ -6,7 +6,7 @@
 ##
 ## `failingOps` injects backend failures. Op names match the `Persistence`
 ## field names: "saveChannelMeta", "updateHistory", "loadChannel",
-## "dropChannel", "setRetrievalHint".
+## "dropChannel".
 
 import std/[tables, sets]
 import chronos
@@ -15,7 +15,6 @@ import sds
 type InMemoryStore* = ref object
   lamports*: Table[SdsChannelID, int64]
   log*: Table[SdsChannelID, OrderedTable[SdsMessageID, SdsMessage]]
-  hints*: Table[SdsMessageID, seq[byte]]
   outgoing*: Table[SdsChannelID, OrderedTable[SdsMessageID, UnacknowledgedMessage]]
   incoming*: Table[SdsChannelID, OrderedTable[SdsMessageID, IncomingMessage]]
   outgoingRepair*: Table[SdsChannelID, OrderedTable[SdsMessageID, OutgoingRepairEntry]]
@@ -23,8 +22,7 @@ type InMemoryStore* = ref object
   dropChannelCalls*: Table[SdsChannelID, int]
     ## Per-channel counter; lets tests assert dropChannel is invoked
     ## exactly once per logical drop.
-  failingOps*: HashSet[string]
-    ## Op names that should return an injected backend error.
+  failingOps*: HashSet[string] ## Op names that should return an injected backend error.
 
 proc newInMemoryStore*(): InMemoryStore =
   InMemoryStore(failingOps: initHashSet[string]())
@@ -48,8 +46,7 @@ proc newInMemoryPersistence*(store: InMemoryStore): Persistence =
           store.outgoing[channelId][u.message.messageId] = u
 
         # Incoming buffer.
-        store.incoming[channelId] =
-          initOrderedTable[SdsMessageID, IncomingMessage]()
+        store.incoming[channelId] = initOrderedTable[SdsMessageID, IncomingMessage]()
         for m in meta.incomingBuffer:
           store.incoming[channelId][m.message.messageId] = m
 
@@ -119,12 +116,5 @@ proc newInMemoryPersistence*(store: InMemoryStore): Persistence =
         store.incomingRepair.del(channelId)
         store.dropChannelCalls[channelId] =
           store.dropChannelCalls.getOrDefault(channelId) + 1
-      ok(),
-    setRetrievalHint: proc(
-        msgId: SdsMessageID, hint: seq[byte]
-    ): Future[Result[void, string]] {.async: (raises: []).} =
-      if "setRetrievalHint" in store.failingOps:
-        return err("injected backend failure: setRetrievalHint")
-      store.hints[msgId] = hint
       ok(),
   )
