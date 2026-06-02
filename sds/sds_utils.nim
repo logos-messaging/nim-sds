@@ -328,15 +328,6 @@ proc getRecentHistoryEntries*(
         if not rm.onRetrievalHint.isNil():
           {.cast(raises: []).}:
             entry.retrievalHint = rm.onRetrievalHint(msgId)
-          if entry.retrievalHint.len > 0:
-            # Phase 2B: best-effort hint persistence via V2. Non-fatal —
-            # hints are an optimisation; a missing hint just means the
-            # peer falls back to slower retrieval.
-            let hintRes =
-              await rm.persistence.setRetrievalHint(msgId, entry.retrievalHint)
-            if hintRes.isErr():
-              warn "retrieval hint save failed; continuing",
-                msgId = msgId, detail = hintRes.error
         entry.senderId = channel.messageHistory[msgId].senderId
         entries.add(entry)
       ok(entries)

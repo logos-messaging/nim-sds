@@ -27,7 +27,6 @@ export results, sds_message_id, channel_meta, history_update
 type Persistence* = object
   ## Pluggable durability backend. Supplied at `newReliabilityManager`
   ## construction time; defaults to `noOpPersistence()` when not given.
-
   saveChannelMeta*: proc(
     channelId: SdsChannelID, meta: ChannelMeta
   ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
@@ -42,29 +41,20 @@ type Persistence* = object
     ## maxMessageHistory cap. Callers SHOULD skip this call entirely when
     ## `update.isEmpty`.
 
-  loadChannel*: proc(
-    channelId: SdsChannelID
-  ): Future[Result[ChannelData, string]] {.async: (raises: []), gcsafe.}
+  loadChannel*: proc(channelId: SdsChannelID): Future[Result[ChannelData, string]] {.
+    async: (raises: []), gcsafe
+  .}
     ## Bootstrap on `getOrCreateChannel`. Returns the full prior state, or
     ## an empty `ChannelData` if the channel is new on disk. Failure
     ## propagates to the caller — bootstrap is a durability-intent op.
 
-  dropChannel*: proc(
-    channelId: SdsChannelID
-  ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
+  dropChannel*: proc(channelId: SdsChannelID): Future[Result[void, string]] {.
+    async: (raises: []), gcsafe
+  .}
     ## Wipe all persisted state for a channel. Called by `removeChannel` /
     ## `resetReliabilityManager`. Backends SHOULD execute atomically.
     ## Failure propagates to the caller — the caller asked us to confirm a
     ## disk wipe and we cannot silently lie.
-
-  setRetrievalHint*: proc(
-    msgId: SdsMessageID, hint: seq[byte]
-  ): Future[Result[void, string]] {.async: (raises: []), gcsafe.}
-    ## Record a retrieval hint for a message id. Called from
-    ## `getRecentHistoryEntries` when an application-supplied hint
-    ## provider returns a non-empty hint. Out-of-band from the
-    ## snapshot/history write path because hints are populated lazily
-    ## during read. Non-fatal on failure.
 
 proc noOpPersistence*(): Persistence =
   ## Default backend: discards all writes, returns an empty snapshot on
@@ -85,10 +75,6 @@ proc noOpPersistence*(): Persistence =
       ok(ChannelData.init()),
     dropChannel: proc(
         channelId: SdsChannelID
-    ): Future[Result[void, string]] {.async: (raises: []).} =
-      ok(),
-    setRetrievalHint: proc(
-        msgId: SdsMessageID, hint: seq[byte]
     ): Future[Result[void, string]] {.async: (raises: []).} =
       ok(),
   )
