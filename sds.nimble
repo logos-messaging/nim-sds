@@ -16,7 +16,7 @@ requires "stew"
 requires "stint"
 requires "metrics"
 requires "results"
-requires "taskpools >= 0.1.0" ## This should be removed when using nim-ffi dependency
+requires "https://github.com/logos-messaging/nim-ffi >= 0.1.4"
 
 proc buildLibrary(
     outLibNameAndExt: string,
