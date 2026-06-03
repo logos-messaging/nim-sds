@@ -166,8 +166,15 @@
 
   ffi = pkgs.fetchgit {
     url = "https://github.com/logos-messaging/nim-ffi";
-    rev = "fb25f069d2dfae2b543d79d2c1a81f197de22a2b";
-    sha256 = "0zkjnrm2yjlw27q99kv2x8ll61mbz4nr0cvmyq0csydh43c08k0p";
+    rev = "f96a5b158add9c321e33ff804f2275a5314a501b";
+    sha256 = "1hcv1k3c18rhg2nrndld2b6xx23nfnlcfkm0bidqha4by4hzn9lr";
+    fetchSubmodules = true;
+  };
+
+  cbor_serialization = pkgs.fetchgit {
+    url = "https://github.com/vacp2p/nim-cbor-serialization";
+    rev = "1664160e04d153573373afddc552b9cbf6fbe4dc";
+    sha256 = "0c1rj4fk0fcqvsf0yqhxvm8h10aww75gi4yfsjhlczh88ypywii2";
     fetchSubmodules = true;
   };
 

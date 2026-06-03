@@ -1,40 +1,35 @@
 ## C-compatible FFI wrapper around the SDS ReliabilityManager.
 ##
-## Built on the `nim-ffi` package's high-level macros: `declareLibrary` emits the
-## bootstrap + `sds_set_event_callback`; `{.ffiCtor.}`/`{.ffi.}`/`{.ffiDtor.}`
-## generate the C entry points, marshalling parameters and return values as JSON.
-## Exported C names are snake_case (`sds_wrap_outgoing_message`, …); see
-## `library/libsds.h`. The Go bindings (sds-go-bindings) must match this API.
+## Built on nim-ffi (v0.2.0+): `declareLibrary` emits the bootstrap plus the
+## event-listener ABI (`sds_add_event_listener` / `sds_remove_event_listener`);
+## `{.ffiCtor.}`/`{.ffi.}`/`{.ffiDtor.}` generate the C entry points; and
+## `{.ffiEvent.}` declares library-initiated events. Requests, responses and
+## events are marshalled as CBOR (see library/libsds.h). Exported C names are
+## snake_case. The Go bindings (sds-go-bindings) must match this API.
 ##
-## The one exception is `sds_set_retrieval_hint_provider`: it takes a C function
-## pointer, which has no sensible JSON representation, so it is hand-written and
-## dispatched to the worker thread to store the provider in a thread-local.
+## The one hand-written export is `sds_set_retrieval_hint_provider`: it takes a
+## C function pointer (no CBOR representation), so it dispatches a request that
+## stores the provider in a worker-thread thread-local.
 
-import std/[base64, json, sequtils]
+import std/[sequtils]
 import ffi
 import sds
-import ./events/[
-  json_message_ready_event, json_message_sent_event, json_missing_dependencies_event,
-  json_periodic_sync_event, json_repair_ready_event,
-]
 
-# Bootstrap (pragmas, linker flags, libsdsNimMain, initializeLibrary) plus the
-# `sds_set_event_callback(ctx, callback, userData)` C export.
+# Bootstrap + sds_add_event_listener / sds_remove_event_listener.
 declareLibrary("sds", ReliabilityManager)
 
 type SdsRetrievalHintProvider* = proc(
   messageId: cstring, hint: ptr cstring, hintLen: ptr csize_t, userData: pointer
 ) {.cdecl, gcsafe, raises: [].}
 
-# The active retrieval-hint provider, stored per worker thread (one thread per
-# context). Set by sds_set_retrieval_hint_provider via a dispatched request so
-# the write lands on the worker thread, where the manager's hint closure reads
-# it during message processing.
+# Active retrieval-hint provider, per worker thread (one thread per context).
+# Set by sds_set_retrieval_hint_provider through a dispatched request so the
+# write lands on the worker thread, where the manager's hint closure reads it.
 var sdsRetrievalHintCb {.threadvar.}: pointer
 var sdsRetrievalHintUserData {.threadvar.}: pointer
 
 ################################################################################
-### JSON-marshalled request/response types
+### CBOR-marshalled request/response types
 
 type SdsConfig* {.ffi.} = object
   participantId: string ## empty disables SDS-R (see newReliabilityManager)
@@ -50,16 +45,59 @@ type SdsWrapResponse* {.ffi.} = object
 type SdsUnwrapRequest* {.ffi.} = object
   message: seq[byte]
 
+type SdsMissingDep* {.ffi.} = object
+  messageId: string
+  retrievalHint: seq[byte]
+
+type SdsUnwrapResponse* {.ffi.} = object
+  message: seq[byte]
+  channelId: string
+  missingDeps: seq[SdsMissingDep]
+
 type SdsMarkDependenciesRequest* {.ffi.} = object
   messageIds: seq[string]
   channelId: string
 
 ################################################################################
+### Library-initiated events
+###
+### Each {.ffiEvent.} proc is an emitter: calling it from a worker-thread
+### handler dispatches a CBOR EventEnvelope to every listener subscribed (via
+### sds_add_event_listener) to the matching wire name.
+
+type SdsMessageReadyPayload* {.ffi.} = object
+  messageId: string
+  channelId: string
+
+type SdsMessageSentPayload* {.ffi.} = object
+  messageId: string
+  channelId: string
+
+type SdsMissingDependenciesPayload* {.ffi.} = object
+  messageId: string
+  channelId: string
+  missingDeps: seq[SdsMissingDep]
+
+type SdsPeriodicSyncPayload* {.ffi.} = object
+  placeholder: bool ## events need a payload type; periodic sync carries no data
+
+type SdsRepairReadyPayload* {.ffi.} = object
+  message: seq[byte]
+  channelId: string
+
+proc emitMessageReady*(p: SdsMessageReadyPayload) {.ffiEvent: "message_ready".}
+proc emitMessageSent*(p: SdsMessageSentPayload) {.ffiEvent: "message_sent".}
+proc emitMissingDependencies*(
+  p: SdsMissingDependenciesPayload
+) {.ffiEvent: "missing_dependencies".}
+proc emitPeriodicSync*(p: SdsPeriodicSyncPayload) {.ffiEvent: "periodic_sync".}
+proc emitRepairReady*(p: SdsRepairReadyPayload) {.ffiEvent: "repair_ready".}
+
+################################################################################
 ### Constructor — creates the FFI context and the ReliabilityManager.
 ###
-### The AppCallbacks closures run on the worker thread and forward events to the
-### C callback registered via sds_set_event_callback (dispatchFfiEvent reads the
-### per-thread callback state, so no context handle is needed here).
+### The AppCallbacks closures run on the worker thread; they build typed
+### payloads and fire the {.ffiEvent.} emitters, which reach the C listeners.
 
 proc sdsCreate*(
     config: SdsConfig
@@ -71,28 +109,39 @@ proc sdsCreate*(
   let messageReadyCb = proc(
       messageId: SdsMessageID, channelId: SdsChannelID
   ) {.gcsafe.} =
-    dispatchFfiEvent("message_ready"):
-      $JsonMessageReadyEvent.new(messageId, channelId)
+    {.cast(gcsafe).}:
+      emitMessageReady(
+        SdsMessageReadyPayload(messageId: $messageId, channelId: $channelId)
+      )
 
   let messageSentCb = proc(
       messageId: SdsMessageID, channelId: SdsChannelID
   ) {.gcsafe.} =
-    dispatchFfiEvent("message_sent"):
-      $JsonMessageSentEvent.new(messageId, channelId)
+    {.cast(gcsafe).}:
+      emitMessageSent(
+        SdsMessageSentPayload(messageId: $messageId, channelId: $channelId)
+      )
 
   let missingDependenciesCb = proc(
       messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID
   ) {.gcsafe.} =
-    dispatchFfiEvent("missing_dependencies"):
-      $JsonMissingDependenciesEvent.new(messageId, missingDeps, channelId)
+    {.cast(gcsafe).}:
+      let deps = missingDeps.mapIt(
+        SdsMissingDep(messageId: $it.messageId, retrievalHint: it.retrievalHint)
+      )
+      emitMissingDependencies(
+        SdsMissingDependenciesPayload(
+          messageId: $messageId, channelId: $channelId, missingDeps: deps
+        )
+      )
 
   let periodicSyncCb = proc() {.gcsafe.} =
-    dispatchFfiEvent("periodic_sync"):
-      $JsonPeriodicSyncEvent.new()
+    {.cast(gcsafe).}:
+      emitPeriodicSync(SdsPeriodicSyncPayload(placeholder: false))
 
   let repairReadyCb = proc(message: seq[byte], channelId: SdsChannelID) {.gcsafe.} =
-    dispatchFfiEvent("repair_ready"):
-      $JsonRepairReadyEvent.new(message, channelId)
+    {.cast(gcsafe).}:
+      emitRepairReady(SdsRepairReadyPayload(message: message, channelId: $channelId))
 
   let retrievalHintProvider = proc(messageId: SdsMessageID): seq[byte] {.gcsafe.} =
     if sdsRetrievalHintCb.isNil():
@@ -133,26 +182,18 @@ proc sdsWrapOutgoingMessage*(
 
 proc sdsUnwrapReceivedMessage*(
     rm: ReliabilityManager, req: SdsUnwrapRequest
-): Future[Result[string, string]] {.ffi.} =
-  # The response carries nested objects (missingDeps) which the framework's
-  # object serializer cannot emit, so the JSON is built by hand and returned as
-  # a string. Shape matches the legacy unwrap response.
+): Future[Result[SdsUnwrapResponse, string]] {.ffi.} =
   let (unwrapped, missingDeps, channelId) = (
     await unwrapReceivedMessage(rm, req.message)
   ).valueOr:
     return err("error processing unwrap request: " & $error)
 
-  var node = newJObject()
-  node["message"] = %*unwrapped
-  node["channelId"] = %*channelId
-  var missingDepsNode = newJArray()
-  for dep in missingDeps:
-    var depNode = newJObject()
-    depNode["messageId"] = %*dep.messageId
-    depNode["retrievalHint"] = %*encode(dep.retrievalHint)
-    missingDepsNode.add(depNode)
-  node["missingDeps"] = missingDepsNode
-  return ok($node)
+  let deps = missingDeps.mapIt(
+    SdsMissingDep(messageId: $it.messageId, retrievalHint: it.retrievalHint)
+  )
+  return ok(
+    SdsUnwrapResponse(message: unwrapped, channelId: $channelId, missingDeps: deps)
+  )
 
 proc sdsMarkDependenciesMet*(
     rm: ReliabilityManager, req: SdsMarkDependenciesRequest
@@ -185,44 +226,27 @@ proc sdsDestroy*(rm: ReliabilityManager) {.ffiDtor.} =
   discard
 
 ################################################################################
-### Retrieval-hint provider (hand-written: a C function pointer cannot be passed
-### as JSON). The setter dispatches a request so the provider is stored in the
-### worker thread's thread-local, where sdsCreate's hint closure reads it.
+### Retrieval-hint provider.
+###
+### The provider is a C function pointer, which has no CBOR representation, so
+### it is passed as integer addresses. The body runs on the worker thread (the
+### empty await forces the async path) and stores the pointers in the
+### thread-local that sdsCreate's hint closure reads. The caller passes the
+### function pointer and user-data as uint64 addresses.
 
-proc sdsNoopCallback(
-    callerRet: cint, msg: ptr cchar, len: csize_t, userData: pointer
-) {.cdecl, gcsafe, raises: [].} =
-  discard
+type SdsHintProviderRequest* {.ffi.} = object
+  callbackAddr: uint64
+  userDataAddr: uint64
 
-registerReqFFI(SdsSetHintReq, ctx: ptr FFIContext[ReliabilityManager]):
-  proc(cbPtr: pointer, udPtr: pointer): Future[Result[string, string]] {.async.} =
-    sdsRetrievalHintCb = cbPtr
-    sdsRetrievalHintUserData = udPtr
-    return ok("")
-
-proc sds_set_retrieval_hint_provider(
-    ctx: ptr FFIContext[ReliabilityManager],
-    callback: SdsRetrievalHintProvider,
-    userData: pointer,
-): cint {.dynlib, exportc, cdecl, raises: [].} =
-  initializeLibrary()
-  if not ReliabilityManagerFFIPool.isValidCtx(cast[pointer](ctx)):
-    return RET_ERR
-
-  let sendRes =
-    try:
-      ffi_context.sendRequestToFFIThread(
-        ctx,
-        SdsSetHintReq.ffiNewReq(
-          sdsNoopCallback, nil, cast[pointer](callback), userData
-        ),
-      )
-    except Exception as exc:
-      Result[void, string].err("sendRequestToFFIThread exception: " & exc.msg)
-  if sendRes.isErr():
-    return RET_ERR
-  return RET_OK
+proc sdsSetRetrievalHintProvider*(
+    rm: ReliabilityManager, req: SdsHintProviderRequest
+): Future[Result[string, string]] {.ffi.} =
+  discard rm
+  await sleepAsync(chronos.milliseconds(0))
+  sdsRetrievalHintCb = cast[pointer](req.callbackAddr)
+  sdsRetrievalHintUserData = cast[pointer](req.userDataAddr)
+  return ok("")
 
 # Emit binding metadata (no-op unless -d:ffiGenBindings). Must follow every
-# {.ffi.}/{.ffiCtor.}/{.ffiDtor.} annotation.
+# {.ffi.}/{.ffiCtor.}/{.ffiDtor.}/{.ffiEvent.} annotation.
 genBindings()

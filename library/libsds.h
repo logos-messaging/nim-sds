@@ -1,10 +1,11 @@
 
-// C API for libsds, built on the nim-ffi framework.
+// C API for libsds, built on the nim-ffi framework (v0.2.0+).
 //
-// Parameters and results are marshalled as JSON: each request/response struct
-// in library/libsds.nim is a JSON object, passed in via the `*Json` cstring
-// argument and returned to the callback as a JSON string. Binary fields
-// (message bytes) are JSON arrays of byte values.
+// Requests, responses and events are marshalled as CBOR. Request payloads are
+// passed as a (reqCbor, reqCborLen) byte buffer; results and events are
+// delivered to the callback as a CBOR buffer (msg, len). Each request/response
+// struct and event payload is defined in library/libsds.nim. Events are
+// wrapped in a CBOR envelope { eventType: <wire name>, payload: <struct> }.
 #ifndef __libsds__
 #define __libsds__
 
@@ -20,48 +21,67 @@
 extern "C" {
 #endif
 
-// Result/event callback. `msg` is the (JSON) payload of length `len`.
+// Result/event callback. `msg` is the CBOR payload of length `len`.
 // callerRet is one of the RET_* codes above.
 typedef void (*SdsCallBack) (int callerRet, const char* msg, size_t len, void* userData);
 
 // Synchronous provider invoked by SDS-R to fetch a retrieval hint for a
 // message id. The implementation allocates `*hint` (and sets `*hintLen`); the
-// library takes ownership and frees it with deallocShared.
+// library takes ownership and frees it with deallocShared. Registered via
+// sds_set_retrieval_hint_provider (see below).
 typedef void (*SdsRetrievalHintProvider) (const char* messageId, char** hint, size_t* hintLen, void* userData);
 
 
-// --- Core API Functions ---
+// --- Lifecycle -------------------------------------------------------------
+
+// Create a context + ReliabilityManager. reqCbor encodes SdsConfig
+// { participantId: tstr } (empty participantId disables SDS-R). Returns the
+// context handle, or NULL on failure; the callback also fires on completion.
+void* sds_create(const uint8_t* reqCbor, size_t reqCborLen, SdsCallBack callback, void* userData);
+
+// Tear down the context created by sds_create. Blocks until the worker and
+// watchdog threads have joined.
+int sds_destroy(void* ctx);
 
 
-// Create a context + ReliabilityManager. configJson: {"participantId":"..."}
-// (empty participantId disables SDS-R). Returns the context handle, or NULL on
-// failure. The callback also fires on async completion.
-void* sds_create(const char* configJson, SdsCallBack callback, void* userData);
+// --- Events ----------------------------------------------------------------
+// Subscribe `callback` to an event by wire name and receive a stable listener
+// id (non-zero). Event wire names: "message_ready", "message_sent",
+// "missing_dependencies", "periodic_sync", "repair_ready". Subscribe to each
+// event separately. Payloads arrive as CBOR { eventType, payload }.
+uint64_t sds_add_event_listener(void* ctx, const char* eventName, SdsCallBack callback, void* userData);
 
-// Register the event callback (message_ready, message_sent,
-// missing_dependencies, periodic_sync, repair_ready). Payloads are JSON.
-void sds_set_event_callback(void* ctx, SdsCallBack callback, void* userData);
+// Remove a listener by id. Returns 0 on success, non-zero if not found.
+int sds_remove_event_listener(void* ctx, uint64_t listenerId);
 
-// Register the retrieval-hint provider used by SDS-R.
-int sds_set_retrieval_hint_provider(void* ctx, SdsRetrievalHintProvider callback, void* userData);
+// Register the SDS-R retrieval-hint provider. reqCbor encodes
+// SdsHintProviderRequest { callbackAddr: uint, userDataAddr: uint } — the
+// SdsRetrievalHintProvider function pointer and its user-data as integer
+// addresses.
+int sds_set_retrieval_hint_provider(void* ctx, SdsCallBack callback, void* userData, const uint8_t* reqCbor, size_t reqCborLen);
 
-// reqJson: {"message":[..bytes..],"messageId":"..","channelId":".."}
-// Result JSON: {"message":[..bytes..]}
-int sds_wrap_outgoing_message(void* ctx, SdsCallBack callback, void* userData, const char* reqJson);
 
-// reqJson: {"message":[..bytes..]}
-// Result JSON: {"message":[..],"channelId":"..","missingDeps":[{"messageId":"..","retrievalHint":"<base64>"}]}
-int sds_unwrap_received_message(void* ctx, SdsCallBack callback, void* userData, const char* reqJson);
+// --- Core API Functions ----------------------------------------------------
+// Each takes a CBOR-encoded request buffer; the result is delivered to
+// `callback` as CBOR.
 
-// reqJson: {"messageIds":["..",".."],"channelId":".."}
-int sds_mark_dependencies_met(void* ctx, SdsCallBack callback, void* userData, const char* reqJson);
+// reqCbor: SdsWrapRequest { message: bytes, messageId: tstr, channelId: tstr }
+// result:  SdsWrapResponse { message: bytes }
+int sds_wrap_outgoing_message(void* ctx, SdsCallBack callback, void* userData, const uint8_t* reqCbor, size_t reqCborLen);
 
-int sds_reset(void* ctx, SdsCallBack callback, void* userData);
+// reqCbor: SdsUnwrapRequest { message: bytes }
+// result:  SdsUnwrapResponse { message: bytes, channelId: tstr,
+//                              missingDeps: [{ messageId: tstr, retrievalHint: bytes }] }
+int sds_unwrap_received_message(void* ctx, SdsCallBack callback, void* userData, const uint8_t* reqCbor, size_t reqCborLen);
 
-int sds_start_periodic_tasks(void* ctx, SdsCallBack callback, void* userData);
+// reqCbor: SdsMarkDependenciesRequest { messageIds: [tstr], channelId: tstr }
+int sds_mark_dependencies_met(void* ctx, SdsCallBack callback, void* userData, const uint8_t* reqCbor, size_t reqCborLen);
 
-// Tear down the context created by sds_create.
-int sds_destroy(void* ctx, SdsCallBack callback, void* userData);
+// reqCbor: empty/unit payload (no fields).
+int sds_reset(void* ctx, SdsCallBack callback, void* userData, const uint8_t* reqCbor, size_t reqCborLen);
+
+// reqCbor: empty/unit payload (no fields).
+int sds_start_periodic_tasks(void* ctx, SdsCallBack callback, void* userData, const uint8_t* reqCbor, size_t reqCborLen);
 
 
 #ifdef __cplusplus
