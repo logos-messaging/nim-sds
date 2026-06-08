@@ -1,7 +1,7 @@
 import strutils, os
 
 # Package
-version = "0.3.0"
+version = "0.4.0"
 author = "Logos Messaging Team"
 description = "E2E Scalable Data Sync API"
 license = "MIT"
@@ -16,7 +16,7 @@ requires "stew"
 requires "stint"
 requires "metrics"
 requires "results"
-requires "https://github.com/logos-messaging/nim-ffi >= 0.1.4"
+requires "https://github.com/logos-messaging/nim-ffi == 0.1.5"
 
 proc buildLibrary(
     outLibNameAndExt: string,
