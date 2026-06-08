@@ -183,6 +183,9 @@ registerReqFFI(SdsCreateRmReq, ctx: ptr FFIContext[ReliabilityManager]):
       onPeriodicSync(ctx), onRetrievalHint(ctx), onRepairReady(ctx),
     )
 
+    # nim-ffi frees myLib on recycle, so (re)allocate it here.
+    if ctx.myLib.isNil():
+      ctx.myLib = createShared(ReliabilityManager)
     ctx.myLib[] = rm
     return ok("")
 
@@ -342,13 +345,13 @@ proc SdsCleanupReliabilityManager(
 
   clearRetrievalHint(cast[pointer](ctx))
 
-  let res = ReliabilityManagerFFIPool.destroyFFIContext(ctx)
+  # Recycle (not destroy) to reuse the worker + its fds. NON-BLOCKING: the FFI
+  # thread fires `callback` once drained; the caller blocks on it, not the return.
+  let res = releaseFFIContext(ctx, callback, userData)
   if res.isErr():
     let msg = "error cleaning up reliability manager: " & res.error
     callback(RET_ERR, unsafeAddr msg[0], cast[csize_t](msg.len), userData)
     return RET_ERR
-
-  callback(RET_OK, nil, 0, userData)
   return RET_OK
 
 proc SdsResetReliabilityManager(
