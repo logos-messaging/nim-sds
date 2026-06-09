@@ -30,16 +30,16 @@ proc buildLibrary(
 
   if `type` == "static":
     exec "nim c" & " --out:build/" & outLibNameAndExt &
-      " --threads:on --app:staticlib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds " &
+      " --threads:on --app:staticlib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler " &
       extra_params & " " & srcDir & name & ".nim"
   else:
     when defined(windows):
       exec "nim c" & " --out:build/" & outLibNameAndExt &
-        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds " &
+        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler " &
         extra_params & " " & srcDir & name & ".nim"
     else:
       exec "nim c" & " --out:build/" & outLibNameAndExt &
-        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds " &
+        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler " &
         extra_params & " " & srcDir & name & ".nim"
 
 proc getMyCpu(): string =
@@ -159,8 +159,8 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
   # Use unique symbol prefix to avoid conflicts with other Nim libraries
   exec "nim c" & " --nimcache:" & nimcacheDir & " --os:ios --cpu:" & cpu &
     " --compileOnly:on" & " --noMain --mm:refc" & " --threads:on --opt:size --header" &
-    " --nimMainPrefix:libsds" & " --cc:clang" & " -d:useMalloc" & " " & srcDir &
-    "/libsds.nim"
+    " --nimMainPrefix:libsds" & " --cc:clang" & " -d:useMalloc" & " -d:noSignalHandler" &
+    " " & srcDir & "/libsds.nim"
 
   # 2) Compile all generated C files to object files with hidden visibility
   # This prevents symbol conflicts with other Nim libraries (e.g., libnim_status_client)
@@ -257,6 +257,7 @@ proc buildMobileAndroid(srcDir = ".", extra_params = "") =
   exec "nim c" &
     " --out:" & outDir & "/libsds.so" &
     " --threads:on --app:lib --opt:size --noMain --mm:refc --nimMainPrefix:libsds" &
+    " -d:noSignalHandler" &
     " --cc:clang" &
     " --clang.exe:\"" & ndkClang & "\"" &
     " --clang.linkerexe:\"" & ndkClang & "\"" &
