@@ -315,8 +315,8 @@
       }
     },
     "ffi": {
-      "version": "0.1.5",
-      "vcsRevision": "f6a3a338c0253b8fe6411809ce240b1aef872cd1",
+      "version": "0.1.6",
+      "vcsRevision": "d4c87c1f94c4678eea7d32a8f5f41c72420fadb6",
       "url": "https://github.com/logos-messaging/nim-ffi",
       "downloadMethod": "git",
       "dependencies": [
@@ -325,7 +325,7 @@
         "taskpools"
       ],
       "checksums": {
-        "sha1": "f5f55f13762740648377bf92e0df87def01a614d"
+        "sha1": "fe9000d1246dc146ba1f5e87a09bf9314454871a"
       }
     }
   },

@@ -16,7 +16,7 @@ requires "stew"
 requires "stint"
 requires "metrics"
 requires "results"
-requires "https://github.com/logos-messaging/nim-ffi == 0.1.5"
+requires "https://github.com/logos-messaging/nim-ffi == 0.1.6"
 
 proc buildLibrary(
     outLibNameAndExt: string,
