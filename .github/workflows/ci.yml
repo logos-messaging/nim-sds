@@ -5,9 +5,9 @@ permissions:
   checks: write
 on:
   pull_request:
-    branches: [master]
+    branches: [master, release/*]
   push:
-    branches: [master]
+    branches: [master, release/*]
   workflow_dispatch:
 
 jobs:
