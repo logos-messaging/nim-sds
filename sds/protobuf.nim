@@ -1,4 +1,3 @@
-import libp2p/protobuf/minprotobuf
 import endians
 import ./types/[sds_message_id, history_entry, sds_message, reliability_error]
 import ./protobufutil
@@ -6,7 +5,7 @@ import ./bloom
 import ./sds_utils
 
 proc encodeHistoryEntry*(entry: HistoryEntry): ProtoBuffer =
-  var entryPb = initProtoBuffer()
+  var entryPb = ProtoBuffer.init()
   entryPb.write(1, entry.messageId)
   if entry.retrievalHint.len > 0:
     entryPb.write(2, entry.retrievalHint)
@@ -26,7 +25,7 @@ proc decodeHistoryEntry*(entryPb: ProtoBuffer): ProtobufResult[HistoryEntry] =
   ok(entry)
 
 proc encode*(msg: SdsMessage): ProtoBuffer =
-  var pb = initProtoBuffer()
+  var pb = ProtoBuffer.init()
 
   pb.write(1, msg.messageId)
   pb.write(2, uint64(msg.lamportTimestamp))
@@ -51,7 +50,7 @@ proc encode*(msg: SdsMessage): ProtoBuffer =
   return pb
 
 proc decode*(T: type SdsMessage, buffer: seq[byte]): ProtobufResult[T] =
-  let pb = initProtoBuffer(buffer)
+  let pb = ProtoBuffer.init(buffer)
   var msg = SdsMessage.init("", 0, @[], "", @[], @[])
 
   if not ?pb.getField(1, msg.messageId):
@@ -67,7 +66,7 @@ proc decode*(T: type SdsMessage, buffer: seq[byte]): ProtobufResult[T] =
   if pb.getRepeatedField(3, historyBuffers).isOk():
     # New format: repeated HistoryEntry
     for histBuffer in historyBuffers:
-      let entryPb = initProtoBuffer(histBuffer)
+      let entryPb = ProtoBuffer.init(histBuffer)
       let entry = ?decodeHistoryEntry(entryPb)
       msg.causalHistory.add(entry)
   else:
@@ -95,7 +94,7 @@ proc decode*(T: type SdsMessage, buffer: seq[byte]): ProtobufResult[T] =
   var repairBuffers: seq[seq[byte]]
   if pb.getRepeatedField(13, repairBuffers).isOk():
     for repairBuffer in repairBuffers:
-      let entryPb = initProtoBuffer(repairBuffer)
+      let entryPb = ProtoBuffer.init(repairBuffer)
       let entry = ?decodeHistoryEntry(entryPb)
       msg.repairRequest.add(entry)
 
@@ -104,7 +103,7 @@ proc decode*(T: type SdsMessage, buffer: seq[byte]): ProtobufResult[T] =
 proc extractChannelId*(data: seq[byte]): Result[SdsChannelID, ReliabilityError] =
   ## For extraction of channel ID without full message deserialization
   try:
-    let pb = initProtoBuffer(data)
+    let pb = ProtoBuffer.init(data)
     var channelId: SdsChannelID
     let fieldOk = pb.getField(4, channelId).valueOr:
       return err(ReliabilityError.reDeserializationError)
@@ -124,7 +123,7 @@ proc deserializeMessage*(data: seq[byte]): Result[SdsMessage, ReliabilityError] 
   return ok(msg)
 
 proc serializeBloomFilter*(filter: BloomFilter): Result[seq[byte], ReliabilityError] =
-  var pb = initProtoBuffer()
+  var pb = ProtoBuffer.init()
 
   try:
     var bytes = newSeq[byte](filter.intArray.len * sizeof(int))
@@ -149,7 +148,7 @@ proc deserializeBloomFilter*(data: seq[byte]): Result[BloomFilter, ReliabilityEr
   if data.len == 0:
     return err(ReliabilityError.reDeserializationError)
 
-  let pb = initProtoBuffer(data)
+  let pb = ProtoBuffer.init(data)
   var bytes: seq[byte]
   var cap, errRate, kHashes, mBits: uint64
 

@@ -10,7 +10,7 @@ srcDir = "sds"
 # Dependencies
 requires "nim >= 2.2.4"
 requires "chronos >= 4.0.4"
-requires "libp2p >= 1.15.2"
+requires "protobuf_serialization >= 0.4.0"
 requires "chronicles"
 requires "stew"
 requires "stint"
