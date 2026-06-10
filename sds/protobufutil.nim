@@ -23,7 +23,7 @@ import results
 import faststreams/inputs
 from protobuf_serialization/codec import
   FieldHeader, WireKind, init, number, kind, toBytes, readHeader, readValue,
-  puint64, pbytes, fixed64, fixed32
+  skipValue, puint64, pbytes, fixed64, fixed32
 import ./types/protobuf_error
 
 export results, protobuf_error
@@ -69,9 +69,9 @@ proc init*(T: type ProtoBuffer, data: seq[byte]): T =
       of WireKind.LengthDelim:
         pb.lengthDelims.mgetOrPut(hdr.number, @[]).add(seq[byte](readValue(stream, pbytes)))
       of WireKind.Fixed64:
-        discard readValue(stream, fixed64)
+        skipValue(stream, fixed64)
       of WireKind.Fixed32:
-        discard readValue(stream, fixed32)
+        skipValue(stream, fixed32)
   except CatchableError:
     pb.parseOk = false
   return pb
