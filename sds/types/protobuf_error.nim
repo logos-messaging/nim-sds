@@ -1,7 +1,18 @@
 import results
-import libp2p/protobuf/minprotobuf
 
 type
+  ProtoError* {.pure.} = enum
+    ## Low-level protobuf wire decode errors surfaced by the field codec in
+    ## `sds/protobufutil.nim`.
+    VarintDecode
+    MessageIncomplete
+    BufferOverflow
+    BadWireType
+    IncorrectBlob
+    RequiredFieldMissing
+
+  ProtoResult*[T] = Result[T, ProtoError]
+
   ProtobufErrorKind* {.pure.} = enum
     DecodeFailure
     MissingRequiredField
@@ -9,13 +20,13 @@ type
   ProtobufError* = object
     case kind*: ProtobufErrorKind
     of DecodeFailure:
-      error*: minprotobuf.ProtoError
+      error*: ProtoError
     of MissingRequiredField:
       field*: string
 
   ProtobufResult*[T] = Result[T, ProtobufError]
 
-proc init*(T: type ProtobufError, error: minprotobuf.ProtoError): T =
+proc init*(T: type ProtobufError, error: ProtoError): T =
   return T(kind: ProtobufErrorKind.DecodeFailure, error: error)
 
 proc init*(T: type ProtobufError, field: string): T =
