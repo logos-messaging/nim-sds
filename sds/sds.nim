@@ -1,6 +1,6 @@
 import std/[algorithm, times, tables, sets, options]
 import chronos, results, chronicles
-import sds/[types, protobuf, sds_utils, rolling_bloom_filter]
+import ./[types, protobuf, sds_utils, rolling_bloom_filter]
 
 export types, protobuf, sds_utils, rolling_bloom_filter
 
