@@ -38,11 +38,8 @@ proc buildLibrary(
         " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler " &
         extra_params & " " & srcDir & name & ".nim"
     else:
-      # TEMP DEBUG: enable Nim's signal handler (drop -d:noSignalHandler, pass the
-      # nim-ffi guard via -d:ffiAllowSignalHandler) + stack/line traces so a SIGSEGV
-      # prints a Nim file:line traceback instead of being swallowed by Go's handler.
       exec "nim c" & " --out:build/" & outLibNameAndExt &
-        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:ffiAllowSignalHandler --stackTrace:on --lineTrace:on " &
+        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler " &
         extra_params & " " & srcDir & name & ".nim"
 
 proc getMyCpu(): string =

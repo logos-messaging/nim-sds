@@ -171,6 +171,7 @@ proc sdsCreate*(
 proc sdsWrapOutgoingMessage*(
     rm: ReliabilityManager, req: SdsWrapRequest
 ): Future[Result[SdsWrapResponse, string]] {.ffi.} =
+  sdsdbg("libsds.sdsWrap: body entered (capture-check) msgLen=" & $req.message.len)
   let wrapped = (
     await wrapOutgoingMessage(
       rm, req.message, req.messageId.SdsMessageID, req.channelId.SdsChannelID
