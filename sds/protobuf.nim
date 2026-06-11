@@ -7,16 +7,12 @@
 ## conversion bridges the two. The mirror string-ish fields are `seq[byte]`
 ## (not `pstring`) so message/channel/sender ids stay opaque bytes — no UTF-8
 ## validation — and the distinct `SdsParticipantID` needs no special support.
-##
-## The mirrors are `proto2` so mandatory fields can be marked `{.required.}`:
-## decoding a message that omits one fails (matching the previous codec), which
-## proto3 cannot express. Genuinely optional fields are `Opt[seq[byte]]`.
 
 {.push raises: [].}
 
 import endians
+import results
 import protobuf_serialization
-import protobuf_serialization/pkg/results
 import ./types/[sds_message_id, history_entry, sds_message, reliability_error]
 import ./bloom
 
@@ -25,30 +21,30 @@ import ./bloom
 # ---------------------------------------------------------------------------
 
 type
-  HistoryEntryPB* {.proto2.} = object
-    messageId* {.fieldNumber: 1, required.}: seq[byte]
-    retrievalHint* {.fieldNumber: 2.}: Opt[seq[byte]]
-    senderId* {.fieldNumber: 3.}: Opt[seq[byte]]
+  HistoryEntryPB* {.proto3.} = object
+    messageId* {.fieldNumber: 1.}: seq[byte]
+    retrievalHint* {.fieldNumber: 2.}: seq[byte]
+    senderId* {.fieldNumber: 3.}: seq[byte]
 
-  SdsMessagePB* {.proto2.} = object
-    messageId* {.fieldNumber: 1, required.}: seq[byte]
-    lamportTimestamp* {.fieldNumber: 2, pint, required.}: int64
+  SdsMessagePB* {.proto3.} = object
+    messageId* {.fieldNumber: 1.}: seq[byte]
+    lamportTimestamp* {.fieldNumber: 2, pint.}: int64
     causalHistory* {.fieldNumber: 3.}: seq[HistoryEntryPB]
-    channelId* {.fieldNumber: 4, required.}: seq[byte]
-    content* {.fieldNumber: 5, required.}: seq[byte]
-    bloomFilter* {.fieldNumber: 6.}: Opt[seq[byte]]
-    senderId* {.fieldNumber: 7.}: Opt[seq[byte]]
+    channelId* {.fieldNumber: 4.}: seq[byte]
+    content* {.fieldNumber: 5.}: seq[byte]
+    bloomFilter* {.fieldNumber: 6.}: seq[byte]
+    senderId* {.fieldNumber: 7.}: seq[byte]
     repairRequest* {.fieldNumber: 13.}: seq[HistoryEntryPB]
 
-  BloomFilterPB {.proto2.} = object
-    data {.fieldNumber: 1, required.}: seq[byte]
-    capacity {.fieldNumber: 2, pint, required.}: uint64
-    errorRate {.fieldNumber: 3, pint, required.}: uint64
-    kHashes {.fieldNumber: 4, pint, required.}: uint64
-    mBits {.fieldNumber: 5, pint, required.}: uint64
+  BloomFilterPB {.proto3.} = object
+    data {.fieldNumber: 1.}: seq[byte]
+    capacity {.fieldNumber: 2, pint.}: uint64
+    errorRate {.fieldNumber: 3, pint.}: uint64
+    kHashes {.fieldNumber: 4, pint.}: uint64
+    mBits {.fieldNumber: 5, pint.}: uint64
 
 # ---------------------------------------------------------------------------
-# string <-> bytes (opaque, no UTF-8 validation) and optional-bytes helpers
+# string <-> bytes (opaque, no UTF-8 validation)
 # ---------------------------------------------------------------------------
 
 func toBytes(s: string): seq[byte] =
@@ -63,12 +59,6 @@ func toStr(b: seq[byte]): string =
     copyMem(addr s[0], unsafeAddr b[0], b.len)
   return s
 
-func optBytes(b: seq[byte]): Opt[seq[byte]] =
-  ## Present only when non-empty, so empty optionals stay off the wire.
-  if b.len > 0:
-    return Opt.some(b)
-  return Opt.none(seq[byte])
-
 # ---------------------------------------------------------------------------
 # Domain <-> wire conversion
 # ---------------------------------------------------------------------------
@@ -76,15 +66,15 @@ func optBytes(b: seq[byte]): Opt[seq[byte]] =
 func toPB*(e: HistoryEntry): HistoryEntryPB =
   return HistoryEntryPB(
     messageId: e.messageId.toBytes,
-    retrievalHint: optBytes(e.retrievalHint),
-    senderId: optBytes(e.senderId.string.toBytes),
+    retrievalHint: e.retrievalHint,
+    senderId: e.senderId.string.toBytes,
   )
 
 func fromPB*(e: HistoryEntryPB): HistoryEntry =
   return HistoryEntry(
     messageId: e.messageId.toStr,
-    retrievalHint: e.retrievalHint.valueOr(@[]),
-    senderId: e.senderId.valueOr(@[]).toStr.SdsParticipantID,
+    retrievalHint: e.retrievalHint,
+    senderId: e.senderId.toStr.SdsParticipantID,
   )
 
 func toPB*(m: SdsMessage): SdsMessagePB =
@@ -93,8 +83,8 @@ func toPB*(m: SdsMessage): SdsMessagePB =
     lamportTimestamp: m.lamportTimestamp,
     channelId: m.channelId.toBytes,
     content: m.content,
-    bloomFilter: optBytes(m.bloomFilter),
-    senderId: optBytes(m.senderId.string.toBytes),
+    bloomFilter: m.bloomFilter,
+    senderId: m.senderId.string.toBytes,
   )
   for e in m.causalHistory:
     pb.causalHistory.add(e.toPB)
@@ -115,8 +105,8 @@ func fromPB*(pb: SdsMessagePB): SdsMessage =
     causalHistory = causal,
     channelId = pb.channelId.toStr,
     content = pb.content,
-    bloomFilter = pb.bloomFilter.valueOr(@[]),
-    senderId = pb.senderId.valueOr(@[]).toStr.SdsParticipantID,
+    bloomFilter = pb.bloomFilter,
+    senderId = pb.senderId.toStr.SdsParticipantID,
     repairRequest = repair,
   )
 
@@ -131,11 +121,17 @@ proc serializeMessage*(msg: SdsMessage): Result[seq[byte], ReliabilityError] =
     return err(ReliabilityError.reSerializationError)
 
 proc deserializeMessage*(data: seq[byte]): Result[SdsMessage, ReliabilityError] =
-  ## A missing `{.required.}` field (messageId, lamportTimestamp, channelId,
-  ## content, or any entry's messageId) makes `Protobuf.decode` raise, which is
-  ## surfaced here as a deserialization error.
+  ## proto3 has no required fields, so presence is validated by hand. Only the
+  ## identifiers are mandatory: `content`, `bloomFilter` and a zero
+  ## `lamportTimestamp` may legitimately be empty (e.g. periodic sync messages).
   try:
-    return ok(Protobuf.decode(data, SdsMessagePB).fromPB)
+    let pb = Protobuf.decode(data, SdsMessagePB)
+    if pb.messageId.len == 0 or pb.channelId.len == 0:
+      return err(ReliabilityError.reDeserializationError)
+    for e in pb.causalHistory & pb.repairRequest:
+      if e.messageId.len == 0:
+        return err(ReliabilityError.reDeserializationError)
+    return ok(pb.fromPB)
   except CatchableError:
     return err(ReliabilityError.reDeserializationError)
 
