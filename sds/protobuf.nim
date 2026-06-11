@@ -139,7 +139,10 @@ proc deserializeMessage*(data: seq[byte]): Result[SdsMessage, ReliabilityError] 
     let msg = Protobuf.decode(data, SdsMessagePB).fromPB
     if msg.messageId.len == 0 or msg.channelId.len == 0:
       return err(ReliabilityError.reDeserializationError)
-    for e in msg.causalHistory & msg.repairRequest:
+    for e in msg.causalHistory:
+      if e.messageId.len == 0:
+        return err(ReliabilityError.reDeserializationError)
+    for e in msg.repairRequest:
       if e.messageId.len == 0:
         return err(ReliabilityError.reDeserializationError)
     return ok(msg)
