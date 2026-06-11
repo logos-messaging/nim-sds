@@ -121,8 +121,17 @@ proc serializeMessage*(msg: SdsMessage): Result[seq[byte], ReliabilityError] =
     return err(ReliabilityError.reSerializationError)
 
 proc deserializeMessage*(data: seq[byte]): Result[SdsMessage, ReliabilityError] =
+  ## proto3 has no required fields, so presence is validated by hand. Only the
+  ## identifiers are mandatory: `content`, `bloomFilter` and a zero
+  ## `lamportTimestamp` may legitimately be empty (e.g. periodic sync messages).
   try:
-    return ok(Protobuf.decode(data, SdsMessagePB).fromPB)
+    let pb = Protobuf.decode(data, SdsMessagePB)
+    if pb.messageId.len == 0 or pb.channelId.len == 0:
+      return err(ReliabilityError.reDeserializationError)
+    for e in pb.causalHistory & pb.repairRequest:
+      if e.messageId.len == 0:
+        return err(ReliabilityError.reDeserializationError)
+    return ok(pb.fromPB)
   except CatchableError:
     return err(ReliabilityError.reDeserializationError)
 
