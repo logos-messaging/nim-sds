@@ -183,19 +183,17 @@ proc sdsWrapOutgoingMessage*(
 proc sdsUnwrapReceivedMessage*(
     rm: ReliabilityManager, req: SdsUnwrapRequest
 ): Future[Result[SdsUnwrapResponse, string]] {.ffi.} =
-  info "SDSDBG libsds.sdsUnwrap: body entered (decode+dispatch OK)",
-    msgLen = req.message.len
+  sdsdbg("libsds.sdsUnwrap: body entered (decode+dispatch OK) msgLen=" & $req.message.len)
   let (unwrapped, missingDeps, channelId) = (
     await unwrapReceivedMessage(rm, req.message)
   ).valueOr:
     return err("error processing unwrap request: " & $error)
-  info "SDSDBG libsds.sdsUnwrap: unwrapReceivedMessage returned",
-    missingDeps = missingDeps.len
+  sdsdbg("libsds.sdsUnwrap: unwrapReceivedMessage returned missingDeps=" & $missingDeps.len)
 
   let deps = missingDeps.mapIt(
     SdsMissingDep(messageId: $it.messageId, retrievalHint: it.retrievalHint)
   )
-  info "SDSDBG libsds.sdsUnwrap: built response, encoding"
+  sdsdbg("libsds.sdsUnwrap: built response, encoding")
   return ok(
     SdsUnwrapResponse(message: unwrapped, channelId: $channelId, missingDeps: deps)
   )
