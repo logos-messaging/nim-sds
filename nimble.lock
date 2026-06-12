@@ -315,17 +315,32 @@
       }
     },
     "ffi": {
-      "version": "0.1.4",
-      "vcsRevision": "fb25f069d2dfae2b543d79d2c1a81f197de22a2b",
+      "version": "0.2.0",
+      "vcsRevision": "f96a5b158add9c321e33ff804f2275a5314a501b",
       "url": "https://github.com/logos-messaging/nim-ffi",
       "downloadMethod": "git",
       "dependencies": [
         "chronos",
         "chronicles",
-        "taskpools"
+        "taskpools",
+        "cbor_serialization"
       ],
       "checksums": {
-        "sha1": "4a5d4020a40106fa2a698d5fe975b9a8ba961f91"
+        "sha1": "46fad75cc79b7ae6eabfadb8fc3e68764dde89a5"
+      }
+    },
+    "cbor_serialization": {
+      "version": "0.3.0",
+      "vcsRevision": "1664160e04d153573373afddc552b9cbf6fbe4dc",
+      "url": "https://github.com/vacp2p/nim-cbor-serialization",
+      "downloadMethod": "git",
+      "dependencies": [
+        "serialization",
+        "stew",
+        "results"
+      ],
+      "checksums": {
+        "sha1": "ab126eae09a6e39c72972a6a0b83cb06a2ffe8f0"
       }
     }
   },
