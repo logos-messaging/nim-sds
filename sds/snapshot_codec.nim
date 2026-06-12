@@ -13,7 +13,6 @@
 {.push raises: [].}
 
 import std/[sets, times]
-import libp2p/protobuf/minprotobuf
 import ./types/[
   channel_meta, history_update, sds_message, sds_message_id, history_entry,
   unacknowledged_message, incoming_message, repair_entry, reliability_error,
@@ -44,20 +43,19 @@ proc fromUnixMs(ms: int64): Time =
 # ---------------------------------------------------------------------------
 
 proc encodeUnacked(u: UnacknowledgedMessage): ProtoBuffer =
-  var pb = initProtoBuffer()
-  let msgPb = wire.encode(u.message)
-  pb.write(1, msgPb.buffer)
+  var pb = ProtoBuffer.init()
+  pb.write(1, wire.serializeMessage(u.message).get())
   pb.write(2, uint64(u.sendTime.toUnixMs))
   pb.write(3, uint32(u.resendAttempts))
   pb.finish()
   pb
 
 proc decodeUnacked(buf: seq[byte]): ProtobufResult[UnacknowledgedMessage] =
-  let pb = initProtoBuffer(buf)
+  let pb = ProtoBuffer.init(buf)
   var msgBytes: seq[byte]
   if not ?pb.getField(1, msgBytes):
     return err(ProtobufError.missingRequiredField("UnacknowledgedMessage.message"))
-  let msg = SdsMessage.decode(msgBytes).valueOr:
+  let msg = wire.deserializeMessage(msgBytes).valueOr:
     return err(ProtobufError.missingRequiredField("UnacknowledgedMessage.message"))
   var sendMs: uint64
   if not ?pb.getField(2, sendMs):
@@ -77,20 +75,19 @@ proc decodeUnacked(buf: seq[byte]): ProtobufResult[UnacknowledgedMessage] =
 # ---------------------------------------------------------------------------
 
 proc encodeIncoming(m: IncomingMessage): ProtoBuffer =
-  var pb = initProtoBuffer()
-  let msgPb = wire.encode(m.message)
-  pb.write(1, msgPb.buffer)
+  var pb = ProtoBuffer.init()
+  pb.write(1, wire.serializeMessage(m.message).get())
   for dep in m.missingDeps:
     pb.write(2, dep) # SdsMessageID is string
   pb.finish()
   pb
 
 proc decodeIncoming(buf: seq[byte]): ProtobufResult[IncomingMessage] =
-  let pb = initProtoBuffer(buf)
+  let pb = ProtoBuffer.init(buf)
   var msgBytes: seq[byte]
   if not ?pb.getField(1, msgBytes):
     return err(ProtobufError.missingRequiredField("IncomingMessage.message"))
-  let msg = SdsMessage.decode(msgBytes).valueOr:
+  let msg = wire.deserializeMessage(msgBytes).valueOr:
     return err(ProtobufError.missingRequiredField("IncomingMessage.message"))
   var deps: seq[SdsMessageID]
   discard pb.getRepeatedField(2, deps)
@@ -104,20 +101,19 @@ proc decodeIncoming(buf: seq[byte]): ProtobufResult[IncomingMessage] =
 # ---------------------------------------------------------------------------
 
 proc encodeOutRepairEntry(e: OutgoingRepairEntry): ProtoBuffer =
-  var pb = initProtoBuffer()
-  let histPb = wire.encodeHistoryEntry(e.outHistEntry)
-  pb.write(1, histPb.buffer)
+  var pb = ProtoBuffer.init()
+  pb.write(1, wire.serializeHistoryEntry(e.outHistEntry).get())
   pb.write(2, uint64(e.minTimeRepairReq.toUnixMs))
   pb.finish()
   pb
 
 proc decodeOutRepairEntry(buf: seq[byte]): ProtobufResult[OutgoingRepairEntry] =
-  let pb = initProtoBuffer(buf)
+  let pb = ProtoBuffer.init(buf)
   var histBytes: seq[byte]
   if not ?pb.getField(1, histBytes):
     return err(ProtobufError.missingRequiredField("OutgoingRepairEntry.outHistEntry"))
-  let histPb = initProtoBuffer(histBytes)
-  let entry = ?wire.decodeHistoryEntry(histPb)
+  let entry = wire.deserializeHistoryEntry(histBytes).valueOr:
+    return err(ProtobufError.missingRequiredField("HistoryEntry"))
   var ms: uint64
   if not ?pb.getField(2, ms):
     return err(ProtobufError.missingRequiredField("OutgoingRepairEntry.minTimeRepairReq"))
@@ -128,7 +124,7 @@ proc decodeOutRepairEntry(buf: seq[byte]): ProtobufResult[OutgoingRepairEntry] =
   )
 
 proc encodeOutRepairKV(kv: OutgoingRepairKV): ProtoBuffer =
-  var pb = initProtoBuffer()
+  var pb = ProtoBuffer.init()
   pb.write(1, kv.messageId)
   let entryPb = encodeOutRepairEntry(kv.entry)
   pb.write(2, entryPb.buffer)
@@ -136,7 +132,7 @@ proc encodeOutRepairKV(kv: OutgoingRepairKV): ProtoBuffer =
   pb
 
 proc decodeOutRepairKV(buf: seq[byte]): ProtobufResult[OutgoingRepairKV] =
-  let pb = initProtoBuffer(buf)
+  let pb = ProtoBuffer.init(buf)
   var msgId: SdsMessageID
   if not ?pb.getField(1, msgId):
     return err(ProtobufError.missingRequiredField("OutgoingRepairKV.messageId"))
@@ -151,21 +147,20 @@ proc decodeOutRepairKV(buf: seq[byte]): ProtobufResult[OutgoingRepairKV] =
 # ---------------------------------------------------------------------------
 
 proc encodeInRepairEntry(e: IncomingRepairEntry): ProtoBuffer =
-  var pb = initProtoBuffer()
-  let histPb = wire.encodeHistoryEntry(e.inHistEntry)
-  pb.write(1, histPb.buffer)
+  var pb = ProtoBuffer.init()
+  pb.write(1, wire.serializeHistoryEntry(e.inHistEntry).get())
   pb.write(2, e.cachedMessage)
   pb.write(3, uint64(e.minTimeRepairResp.toUnixMs))
   pb.finish()
   pb
 
 proc decodeInRepairEntry(buf: seq[byte]): ProtobufResult[IncomingRepairEntry] =
-  let pb = initProtoBuffer(buf)
+  let pb = ProtoBuffer.init(buf)
   var histBytes: seq[byte]
   if not ?pb.getField(1, histBytes):
     return err(ProtobufError.missingRequiredField("IncomingRepairEntry.inHistEntry"))
-  let histPb = initProtoBuffer(histBytes)
-  let entry = ?wire.decodeHistoryEntry(histPb)
+  let entry = wire.deserializeHistoryEntry(histBytes).valueOr:
+    return err(ProtobufError.missingRequiredField("HistoryEntry"))
   var cached: seq[byte]
   if not ?pb.getField(2, cached):
     return err(ProtobufError.missingRequiredField("IncomingRepairEntry.cachedMessage"))
@@ -181,7 +176,7 @@ proc decodeInRepairEntry(buf: seq[byte]): ProtobufResult[IncomingRepairEntry] =
   )
 
 proc encodeInRepairKV(kv: IncomingRepairKV): ProtoBuffer =
-  var pb = initProtoBuffer()
+  var pb = ProtoBuffer.init()
   pb.write(1, kv.messageId)
   let entryPb = encodeInRepairEntry(kv.entry)
   pb.write(2, entryPb.buffer)
@@ -189,7 +184,7 @@ proc encodeInRepairKV(kv: IncomingRepairKV): ProtoBuffer =
   pb
 
 proc decodeInRepairKV(buf: seq[byte]): ProtobufResult[IncomingRepairKV] =
-  let pb = initProtoBuffer(buf)
+  let pb = ProtoBuffer.init(buf)
   var msgId: SdsMessageID
   if not ?pb.getField(1, msgId):
     return err(ProtobufError.missingRequiredField("IncomingRepairKV.messageId"))
@@ -204,7 +199,7 @@ proc decodeInRepairKV(buf: seq[byte]): ProtobufResult[IncomingRepairKV] =
 # ---------------------------------------------------------------------------
 
 proc encode*(meta: ChannelMeta): ProtoBuffer =
-  var pb = initProtoBuffer()
+  var pb = ProtoBuffer.init()
   pb.write(1, meta.schemaVersion)
   pb.write(2, uint64(meta.lamportTimestamp))
   for u in meta.outgoingBuffer:
@@ -223,7 +218,7 @@ proc encode*(meta: ChannelMeta): ProtoBuffer =
   pb
 
 proc decode*(T: type ChannelMeta, buf: seq[byte]): ProtobufResult[T] =
-  let pb = initProtoBuffer(buf)
+  let pb = ProtoBuffer.init(buf)
   var meta = ChannelMeta.init()
 
   var ver: uint32
@@ -271,17 +266,16 @@ proc deserializeChannelMeta*(
 # ---------------------------------------------------------------------------
 
 proc encode*(d: ChannelData): ProtoBuffer =
-  var pb = initProtoBuffer()
+  var pb = ProtoBuffer.init()
   let metaPb = encode(d.meta)
   pb.write(1, metaPb.buffer)
   for m in d.messageHistory:
-    let msgPb = wire.encode(m)
-    pb.write(2, msgPb.buffer)
+    pb.write(2, wire.serializeMessage(m).get())
   pb.finish()
   pb
 
 proc decode*(T: type ChannelData, buf: seq[byte]): ProtobufResult[T] =
-  let pb = initProtoBuffer(buf)
+  let pb = ProtoBuffer.init(buf)
   var d = ChannelData.init()
   var metaBytes: seq[byte]
   if not ?pb.getField(1, metaBytes):
@@ -290,7 +284,7 @@ proc decode*(T: type ChannelData, buf: seq[byte]): ProtobufResult[T] =
   var histBufs: seq[seq[byte]]
   discard pb.getRepeatedField(2, histBufs)
   for b in histBufs:
-    let m = SdsMessage.decode(b).valueOr:
+    let m = wire.deserializeMessage(b).valueOr:
       return err(ProtobufError.missingRequiredField("ChannelData.messageHistory[i]"))
     d.messageHistory.add(m)
   ok(d)
@@ -300,22 +294,21 @@ proc decode*(T: type ChannelData, buf: seq[byte]): ProtobufResult[T] =
 # ---------------------------------------------------------------------------
 
 proc encode*(u: HistoryUpdate): ProtoBuffer =
-  var pb = initProtoBuffer()
+  var pb = ProtoBuffer.init()
   for m in u.append:
-    let msgPb = wire.encode(m)
-    pb.write(1, msgPb.buffer)
+    pb.write(1, wire.serializeMessage(m).get())
   for id in u.evict:
     pb.write(2, id)
   pb.finish()
   pb
 
 proc decode*(T: type HistoryUpdate, buf: seq[byte]): ProtobufResult[T] =
-  let pb = initProtoBuffer(buf)
+  let pb = ProtoBuffer.init(buf)
   var u = HistoryUpdate.init()
   var appBufs: seq[seq[byte]]
   discard pb.getRepeatedField(1, appBufs)
   for b in appBufs:
-    let m = SdsMessage.decode(b).valueOr:
+    let m = wire.deserializeMessage(b).valueOr:
       return err(ProtobufError.missingRequiredField("HistoryUpdate.append[i]"))
     u.append.add(m)
   var ev: seq[SdsMessageID]
