@@ -4,16 +4,6 @@ import sds/[types, protobuf, sds_utils, rolling_bloom_filter]
 
 export types, protobuf, sds_utils, rolling_bloom_filter
 
-proc sdsdbg*(s: string) =
-  ## TEMP debug: write a marker to stderr (captured in container logs even
-  ## though chronicles is compiled out of libsds) with an immediate flush so
-  ## the last marker survives a subsequent SIGSEGV.
-  try:
-    stderr.writeLine("SDSDBG " & s)
-    stderr.flushFile()
-  except CatchableError:
-    discard
-
 proc newReliabilityManager*(
     participantId: SdsParticipantID,
     config: ReliabilityConfig = defaultConfig(),
@@ -259,50 +249,35 @@ proc unwrapReceivedMessage*(
 ] {.async: (raises: []).} =
   ## Unwraps a received message and processes its reliability metadata.
   try:
-    sdsdbg("unwrap s1: entered msgLen=" & $message.len)
     let channelId = extractChannelId(message).valueOr:
       return err(ReliabilityError.reDeserializationError)
-    sdsdbg("unwrap s2: channelId extracted channelId=" & channelId.string)
 
     let msg = deserializeMessage(message).valueOr:
       return err(ReliabilityError.reDeserializationError)
-    sdsdbg(
-      "unwrap s3: message deserialized messageId=" & msg.messageId.string &
-        " causalHistory=" & $msg.causalHistory.len & " repairRequest=" &
-        $msg.repairRequest.len
-    )
 
     let channel = (await rm.getOrCreateChannel(channelId)).valueOr:
       return err(error)
-    sdsdbg("unwrap s4: channel obtained")
 
     # SDS-R: opportunistic repair-buffer cleanup — applies to duplicates too,
     # so rebroadcasts cancel redundant responses on peers that already have the message.
     # Phase 2B: in-memory deletes only; op-end trySaveMeta covers it.
     channel.outgoingRepairBuffer.del(msg.messageId)
     channel.incomingRepairBuffer.del(msg.messageId)
-    sdsdbg("unwrap s5: repair buffers cleaned")
 
     if msg.messageId in channel.messageHistory:
       # Duplicate: no history change. Still flush the meta (repair-buffer
       # dels above are mutations) and the history queue (any pending
       # entries from a prior failed write get retried here too).
-      sdsdbg("unwrap s6dup: duplicate, saving meta")
       await rm.trySaveMeta(channelId, channel)
       await rm.tryUpdateHistory(channelId)
-      sdsdbg("unwrap s6dup: done")
       return ok((msg.content, @[], channelId))
 
-    sdsdbg("unwrap s7: adding to bloom filter")
     channel.bloomFilter.add(msg.messageId)
 
-    sdsdbg("unwrap s8: updating lamport timestamp")
     (await rm.updateLamportTimestamp(msg.lamportTimestamp, channelId)).isOkOr:
       return err(error)
-    sdsdbg("unwrap s9: reviewing ack status")
     (await rm.reviewAckStatus(msg)).isOkOr:
       return err(error)
-    sdsdbg("unwrap s10: ack reviewed, processing repair requests")
 
     # SDS-R: process incoming repair requests from this message. We can only
     # answer for messages we have actually delivered (i.e. that live in
@@ -334,9 +309,7 @@ proc unwrapReceivedMessage*(
             # Phase 2B: in-memory insert only; op-end trySaveMeta covers it.
             channel.incomingRepairBuffer[repairEntry.messageId] = inEntry
 
-    sdsdbg("unwrap s11: checking dependencies")
     var missingDeps = rm.checkDependencies(msg.causalHistory, channelId)
-    sdsdbg("unwrap s12: dependencies checked missingDeps=" & $missingDeps.len)
 
     if missingDeps.len == 0:
       var depsInBuffer = false
@@ -350,7 +323,6 @@ proc unwrapReceivedMessage*(
         # Phase 2B: in-memory insert only; op-end trySaveMeta covers it.
         channel.incomingBuffer[msg.messageId] = entry
       else:
-        sdsdbg("unwrap s13: adding to history")
         (await rm.addToHistory(msg, channelId)).isOkOr:
           return err(error)
         # Unblock any buffered messages that were waiting on this one.
@@ -360,28 +332,20 @@ proc unwrapReceivedMessage*(
         # Cascade — addToHistory calls within processIncomingBuffer queue
         # their entries on the channel's pending-history queue, flushed
         # by the single op-end tryUpdateHistory below.
-        sdsdbg("unwrap s14: processing incoming buffer")
         (await rm.processIncomingBuffer(channelId)).isOkOr:
           return err(error)
-        sdsdbg("unwrap s15: invoking onMessageReady isNil=" & $rm.onMessageReady.isNil())
         if not rm.onMessageReady.isNil():
           {.cast(raises: []).}:
             rm.onMessageReady(msg.messageId, channelId)
-        sdsdbg("unwrap s16: onMessageReady returned")
     else:
       let entry = IncomingMessage.init(
         message = msg, missingDeps = missingDeps.getMessageIds().toHashSet()
       )
       # Phase 2B: in-memory insert only; op-end trySaveMeta covers it.
       channel.incomingBuffer[msg.messageId] = entry
-      sdsdbg(
-        "unwrap s13b: invoking onMissingDependencies isNil=" &
-          $rm.onMissingDependencies.isNil()
-      )
       if not rm.onMissingDependencies.isNil():
         {.cast(raises: []).}:
           rm.onMissingDependencies(msg.messageId, missingDeps, channelId)
-      sdsdbg("unwrap s14b: onMissingDependencies returned")
 
       # SDS-R: add missing deps to outgoing repair buffer
       if rm.participantId.len > 0:
@@ -399,10 +363,8 @@ proc unwrapReceivedMessage*(
     # Op end: one meta snapshot + one history flush, paired under the
     # lock. The flush is the single point where any cascade-driven
     # appends/evicts hit disk (R2 queue absorbs failures).
-    sdsdbg("unwrap s17: op-end saving meta + history")
     await rm.trySaveMeta(channelId, channel)
     await rm.tryUpdateHistory(channelId)
-    sdsdbg("unwrap s18: complete, returning ok")
 
     return ok((msg.content, missingDeps, channelId))
   except CatchableError:

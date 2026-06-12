@@ -39,9 +39,13 @@ typedef void (*SdsRetrievalHintProvider) (const char* messageId, char** hint, si
 // context handle, or NULL on failure; the callback also fires on completion.
 void* sds_create(const uint8_t* reqCbor, size_t reqCborLen, SdsCallBack callback, void* userData);
 
-// Tear down the context created by sds_create. Blocks until the worker and
-// watchdog threads have joined.
-int sds_destroy(void* ctx);
+// Recycle the context created by sds_create, returning it to the pool for
+// reuse without stopping its worker threads (chronos never frees a dispatcher's
+// kqueue fd, so tearing threads down per context would leak fds). NON-BLOCKING:
+// returns RET_OK once the recycle is accepted; the real outcome (RET_OK drained
+// / RET_ERR stuck) arrives via `callback`. Returns RET_ERR synchronously only
+// for a null/invalid ctx or a rejected request.
+int sds_destroy(void* ctx, SdsCallBack callback, void* userData);
 
 
 // --- Events ----------------------------------------------------------------
