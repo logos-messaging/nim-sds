@@ -14,9 +14,9 @@ runs:
       id: nim
       shell: bash
       run: |
-        version=$(sed -n 's/^requires "nim == \(.*\)"$/\1/p' sds.nimble)
+        version=$(jq -r '.packages.nim.version // empty' nimble.lock)
         if [ -z "$version" ]; then
-          echo "Could not read the pinned Nim version from sds.nimble" >&2
+          echo "Could not read the pinned Nim version from nimble.lock" >&2
           exit 1
         fi
         echo "version=$version" >> "$GITHUB_OUTPUT"

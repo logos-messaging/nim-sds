@@ -123,6 +123,25 @@ by running `nix build` and updating the hash from the error output.
 
 </details>
 
+## Embedding
+
+A project that depends on this package through Nimble can build libsds from the
+installed copy without writing into it. The tasks locate their sources from the
+manifest and write to `build/` under the working directory, so run them from
+where the output should go:
+
+```bash
+cd /abs/out
+NIM_PARAMS="--noNimblePath --path:... --path:..." \
+  nim libsdsDynamicLinux <package>/library/sds_tasks.nims
+```
+
+- `library/sds_tasks.nims` runs the manifest's tasks without Nimble, so nothing
+  is re-resolved.
+- `NIM_PARAMS` is appended to every `nim c`: pass the `--path` entries of your
+  own resolution (your `nimble.paths`).
+- The C API header is `library/libsds.h` in the package.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
