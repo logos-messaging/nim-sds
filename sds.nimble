@@ -39,16 +39,16 @@ proc buildLibrary(
   let params = extra_params & " " & getEnv("NIM_PARAMS")
 
   if `type` == "static":
-    exec "nim c" & " --out:build/" & outLibNameAndExt &
+    exec selfExe().quoteShell & " c" & " --out:build/" & outLibNameAndExt &
       " --threads:on --app:staticlib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler " &
       params & " " & srcDir & name & ".nim"
   else:
     when defined(windows):
-      exec "nim c" & " --out:build/" & outLibNameAndExt &
+      exec selfExe().quoteShell & " c" & " --out:build/" & outLibNameAndExt &
         " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler " &
         params & " " & srcDir & name & ".nim"
     else:
-      exec "nim c" & " --out:build/" & outLibNameAndExt &
+      exec selfExe().quoteShell & " c" & " --out:build/" & outLibNameAndExt &
         " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler " &
         params & " " & srcDir & name & ".nim"
 
@@ -135,7 +135,7 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
 
   # 1) Generate C sources from Nim (no linking)
   # Use unique symbol prefix to avoid conflicts with other Nim libraries
-  exec "nim c" & " --nimcache:" & nimcacheDir & " --os:ios --cpu:" & cpu &
+  exec selfExe().quoteShell & " c" & " --nimcache:" & nimcacheDir & " --os:ios --cpu:" & cpu &
     " --compileOnly:on" & " --noMain --mm:refc" & " --threads:on --opt:size --header" &
     " --nimMainPrefix:libsds" & " --cc:clang" & " -d:useMalloc" & " -d:noSignalHandler" &
     " " & srcDir & "/libsds.nim"
@@ -228,7 +228,7 @@ proc buildMobileAndroid(srcDir = ".", extra_params = "") =
   if not dirExists outDir:
     mkDir outDir
 
-  exec "nim c" &
+  exec selfExe().quoteShell & " c" &
     " --out:" & outDir & "/libsds.so" &
     " --threads:on --app:lib --opt:size --noMain --mm:refc --nimMainPrefix:libsds" &
     " -d:noSignalHandler" &
