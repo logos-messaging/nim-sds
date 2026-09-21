@@ -12,7 +12,7 @@ srcDir = "sds"
 installDirs = @["library", "sds"]
 
 # Dependencies
-requires "nim == 2.2.6"
+requires "nim >= 2.2.6"
 requires "chronos >= 4.0.4"
 requires "protobuf_serialization >= 0.5.0"
 requires "chronicles"
