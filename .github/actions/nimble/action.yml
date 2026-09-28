@@ -30,11 +30,10 @@ runs:
         nim-version: ${{ steps.nim.outputs.version }}
 
     # The Nimble bundled with Nim resolves installDirs against srcDir, so a
-    # dependent that installs this package gets no library/. nightly also carries
-    # the lock-file fixes #1833 and #1838, absent from the latest release.
+    # dependent that installs this package gets no library/.
     - uses: nim-lang/setup-nimble-action@v1
       with:
-        nimble-version: 'nightly'
+        nimble-version: '0.26.0'
         repo-token: ${{ inputs.repo-token }}
 
     - name: Enable Git long paths
