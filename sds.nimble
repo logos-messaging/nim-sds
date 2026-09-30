@@ -123,8 +123,8 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
     quit "Error: Xcode/iOS SDK not found"
 
   let aFile = outDir & "/libsds.a"
-  let aFileTmp = outDir & "/libsds_tmp.a"
   let arch = getArch()
+  let clangArch = if arch == "amd64": "x86_64" else: arch
 
   # 1) Generate C sources from Nim (no linking)
   # Use unique symbol prefix to avoid conflicts with other Nim libraries
@@ -143,7 +143,7 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
   let clangFlags = "-arch " & arch & " -isysroot " & sdkPath &
       " -I./vendor/nimbus-build-system/vendor/Nim/lib/" &
       " -fembed-bitcode -miphoneos-version-min=16.0 -O2" &
-      " -fvisibility=hidden"
+      " -fvisibility=hidden -fno-common"
 
   var objectFiles: seq[string] = @[]
   for cFile in listFiles(nimcacheDir):
@@ -152,15 +152,18 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
       exec "clang " & clangFlags & " -c " & cFile & " -o " & oFile
       objectFiles.add(oFile)
 
-  # 3) Create static library from all object files
-  exec "ar rcs " & aFileTmp & " " & objectFiles.join(" ")
-
-  # 4) Use libtool to localize all non-public symbols
-  # Keep only Sds* functions as global, hide everything else to prevent conflicts
-  # with nim runtime symbols from libnim_status_client
-  let keepSymbols = "_Sds*:_libsdsNimMain:_libsdsDatInit*:_libsdsInit*:_NimMainModule__libsds*"
-  exec "xcrun libtool -static -o " & aFile & " " & aFileTmp &
-       " -exported_symbols_list /dev/stdin <<< '" & keepSymbols & "' 2>/dev/null || cp " & aFileTmp & " " & aFile
+  # 3) Merge into one object exporting only the _Sds* API, so libsds's Nim runtime
+  #    can't clash with other static Nim libs (e.g. libnim_status_client).
+  #    (libtool -static ignores -exported_symbols_list on current Xcode; ld -r works.
+  #    Objects go through a response file: too many long paths for one command line.)
+  let objListFile = outDir & "/objects.txt"
+  writeFile(objListFile, objectFiles.join("\n"))
+  let mergedObj = outDir & "/libsds_merged.o"
+  exec "xcrun ld -r -arch " & clangArch & " -exported_symbol '_Sds*' -o " & mergedObj &
+    " -filelist " & objListFile
+  exec "rm -f " & aFile
+  exec "ar rcs " & aFile & " " & mergedObj
+  exec "rm -f " & mergedObj & " " & objListFile
 
   echo "✔ iOS library created: " & aFile
 
