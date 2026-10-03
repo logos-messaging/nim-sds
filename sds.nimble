@@ -13,17 +13,19 @@ installDirs = @["library", "sds"]
 
 # Dependencies
 requires "nim >= 2.2.6"
-requires "chronos >= 4.0.4"
+# Same pin as logos-delivery: the shutdown API nim-ffi needs is in no chronos tag.
+requires "chronos#0de7b335d0ad5557ad5ba71a4b7662f7b201750e"
 requires "protobuf_serialization >= 0.5.0"
 requires "chronicles"
 requires "stew"
 requires "stint"
-requires "metrics"
+requires "https://github.com/status-im/nim-metrics#9f2e1d4a4164deb37603b16cedd1707408ee5955"
 requires "results"
-# nim-ffi imports taskpools/channels_spsc_single, dropped in 0.2.x, and asks
-# for taskpools unconstrained. nimble.lock already resolves 0.1.0.
-requires "taskpools < 0.2.0"
-requires "https://github.com/logos-messaging/nim-ffi#v0.1.5"
+requires "https://github.com/logos-messaging/nim-ffi#4c1218626bbbf89e19836845b690937cd255c3f0"
+
+# Emits library/generated/sds.h (not checked in), which library/libsds.h includes.
+const cBindingsFlags =
+  " -d:ffiGenBindings -d:targetLang=c -d:ffiOutputDir=generated -d:ffiSrcPath=../libsds.nim"
 
 proc buildLibrary(
     outLibNameAndExt: string,
@@ -40,16 +42,16 @@ proc buildLibrary(
 
   if `type` == "static":
     exec "nim c" & " --out:build/" & outLibNameAndExt &
-      " --threads:on --app:staticlib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler " &
+      " --threads:on --app:staticlib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags & " " &
       params & " " & srcDir & name & ".nim"
   else:
     when defined(windows):
       exec "nim c" & " --out:build/" & outLibNameAndExt &
-        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler " &
+        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags & " " &
         params & " " & srcDir & name & ".nim"
     else:
       exec "nim c" & " --out:build/" & outLibNameAndExt &
-        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler " &
+        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags & " " &
         params & " " & srcDir & name & ".nim"
 
 proc getMyCpu(): string =
@@ -137,7 +139,7 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
   # Use unique symbol prefix to avoid conflicts with other Nim libraries
   exec "nim c" & " --nimcache:" & nimcacheDir & " --os:ios --cpu:" & cpu &
     " --compileOnly:on" & " --noMain --mm:refc" & " --threads:on --opt:size --header" &
-    " --nimMainPrefix:libsds" & " --cc:clang" & " -d:useMalloc" & " -d:noSignalHandler" &
+    " --nimMainPrefix:libsds" & cBindingsFlags & " --cc:clang" & " -d:useMalloc" & " -d:noSignalHandler" &
     " " & srcDir & "/libsds.nim"
 
   # 2) Compile all generated C files to object files with hidden visibility
@@ -230,7 +232,7 @@ proc buildMobileAndroid(srcDir = ".", extra_params = "") =
 
   exec "nim c" &
     " --out:" & outDir & "/libsds.so" &
-    " --threads:on --app:lib --opt:size --noMain --mm:refc --nimMainPrefix:libsds" &
+    " --threads:on --app:lib --opt:size --noMain --mm:refc --nimMainPrefix:libsds" & cBindingsFlags &
     " -d:noSignalHandler" &
     " --cc:clang" &
     " --clang.exe:\"" & ndkClang & "\"" &

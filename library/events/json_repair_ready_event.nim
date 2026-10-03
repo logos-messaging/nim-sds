@@ -12,7 +12,7 @@ proc new*(
     eventType: "repair_ready", message: message, channelId: channelId
   )
 
-method `$`*(jsonRepairReady: JsonRepairReadyEvent): string =
+method `$`*(jsonRepairReady: JsonRepairReadyEvent): string {.raises: [].} =
   var node = newJObject()
   node["eventType"] = %*jsonRepairReady.eventType
   node["channelId"] = %*jsonRepairReady.channelId

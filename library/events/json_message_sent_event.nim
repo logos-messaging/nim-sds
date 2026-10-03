@@ -12,5 +12,5 @@ proc new*(
     eventType: "message_sent", messageId: messageId, channelId: channelId
   )
 
-method `$`*(jsonMessageSent: JsonMessageSentEvent): string =
+method `$`*(jsonMessageSent: JsonMessageSentEvent): string {.raises: [].} =
   $(%*jsonMessageSent)
