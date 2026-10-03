@@ -97,6 +97,9 @@ in stdenv.mkDerivation {
     pkgs.lsb-release
   ];
 
+  # The generated C helpers in libsds.h call TinyCBOR.
+  propagatedBuildInputs = optionals (!isAndroidBuild) [ pkgs.tinycbor ];
+
   configurePhase = ''
     export NIMBLE_DIR=$NIX_BUILD_TOP/nimbledeps
     mkdir -p $NIMBLE_DIR/pkgs2
@@ -129,6 +132,7 @@ in stdenv.mkDerivation {
     mkdir -p $out/lib -p $out/include
     cp build/lib* $out/lib/
     cp library/libsds.h $out/include/
+    cp -r library/generated $out/include/
   '';
 
   meta = with pkgs.lib; {

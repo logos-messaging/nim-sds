@@ -19,7 +19,7 @@ proc new*(
     channelId: channelId,
   )
 
-method `$`*(jsonMissingDependencies: JsonMissingDependenciesEvent): string =
+method `$`*(jsonMissingDependencies: JsonMissingDependenciesEvent): string {.raises: [].} =
   var node = newJObject()
   node["eventType"] = %*jsonMissingDependencies.eventType
   node["messageId"] = %*jsonMissingDependencies.messageId
