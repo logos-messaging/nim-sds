@@ -13,13 +13,13 @@ installDirs = @["library", "sds"]
 
 # Dependencies
 requires "nim >= 2.2.6"
-# Same pin as logos-delivery: the shutdown API nim-ffi needs is in no chronos tag.
-requires "chronos#0de7b335d0ad5557ad5ba71a4b7662f7b201750e"
+# nimble.lock pins the untagged chronos commit nim-ffi needs; a pin here breaks dependents.
+requires "chronos"
 requires "protobuf_serialization >= 0.5.0"
 requires "chronicles"
 requires "stew"
 requires "stint"
-requires "https://github.com/status-im/nim-metrics#9f2e1d4a4164deb37603b16cedd1707408ee5955"
+requires "metrics"
 requires "results"
 requires "https://github.com/logos-messaging/nim-ffi#4c1218626bbbf89e19836845b690937cd255c3f0"
 
