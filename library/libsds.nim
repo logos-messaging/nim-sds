@@ -101,7 +101,7 @@ proc sdsCreate*(
     dispatchFfiEvent("missing_dependencies"):
       $JsonMissingDependenciesEvent.new(messageId, missingDeps, channelId)
 
-  let periodicSyncCb = proc() {.gcsafe.} =
+  let periodicSyncCb: PeriodicSyncCallback = proc() {.gcsafe, raises: [].} =
     dispatchFfiEvent("periodic_sync"):
       $JsonPeriodicSyncEvent.new()
 
@@ -209,26 +209,29 @@ proc sdsNoopCallback(
 ) {.cdecl, gcsafe, raises: [].} =
   discard
 
+# Request params are CBOR-encoded, so the in-process pointers cross as integers.
 registerReqFFI(SdsSetHintReq, ctx: ptr FFIContext[ReliabilityManager]):
-  proc(cbPtr: pointer, udPtr: pointer): Future[Result[string, string]] {.async.} =
-    sdsRetrievalHintCb = cbPtr
-    sdsRetrievalHintUserData = udPtr
+  proc(cbAddr: uint64, udAddr: uint64): Future[Result[string, string]] {.async.} =
+    sdsRetrievalHintCb = cast[pointer](cbAddr)
+    sdsRetrievalHintUserData = cast[pointer](udAddr)
     return ok("")
 
 proc sds_set_retrieval_hint_provider(
-    ctx: ptr FFIContext[ReliabilityManager],
-    callback: SdsRetrievalHintProvider,
-    userData: pointer,
+    ctxToken: FFICtxToken, callback: SdsRetrievalHintProvider, userData: pointer
 ): cint {.dynlib, exportc, cdecl, raises: [].} =
   initializeLibrary()
-  if not ReliabilityManagerFFIPool.isValidCtx(cast[pointer](ctx)):
+  let ctx = ReliabilityManagerFFIPool.resolveCtx(ctxToken)
+  if ctx.isNil():
     return RET_ERR
 
   let sendRes =
     try:
       ffi_context.sendRequestToFFIThread(
         ctx,
-        SdsSetHintReq.ffiNewReq(sdsNoopCallback, nil, cast[pointer](callback), userData),
+        SdsSetHintReq.ffiNewReq(
+          sdsNoopCallback, nil, cast[uint64](callback), cast[uint64](userData)
+        ),
+        ctxToken.tokenGeneration(),
       )
     except Exception as exc:
       Result[void, string].err("sendRequestToFFIThread exception: " & exc.msg)

@@ -12,5 +12,5 @@ proc new*(
     eventType: "message_ready", messageId: messageId, channelId: channelId
   )
 
-method `$`*(jsonMessageReady: JsonMessageReadyEvent): string =
+method `$`*(jsonMessageReady: JsonMessageReadyEvent): string {.raises: [].} =
   $(%*jsonMessageReady)
