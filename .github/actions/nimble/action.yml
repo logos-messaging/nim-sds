@@ -22,15 +22,10 @@ runs:
       shell: bash
       run: git config --global core.longpaths true
 
-    # Nim's runtime does not use the \\?\ extended-path prefix, so a deep
-    # dependency under the default TEMP still exceeds 260 chars.
-    - name: Shorten the temporary directory
+    - name: Show LongPathsEnabled
       if: runner.os == 'Windows'
       shell: pwsh
-      run: |
-        New-Item -ItemType Directory -Force -Path C:\T | Out-Null
-        "TEMP=C:\T" >> $env:GITHUB_ENV
-        "TMP=C:\T"  >> $env:GITHUB_ENV
+      run: Get-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem -Name LongPathsEnabled
 
     - name: Install dependencies
       shell: bash
