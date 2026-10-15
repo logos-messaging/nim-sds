@@ -20,12 +20,15 @@ runs:
     - name: Enable Git long paths
       if: runner.os == 'Windows'
       shell: bash
-      run: git config --global core.longpaths true
+      run: git config --system core.longpaths true
 
-    - name: Show LongPathsEnabled
+    - name: Use a long profile path
       if: runner.os == 'Windows'
       shell: pwsh
-      run: Get-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem -Name LongPathsEnabled
+      run: |
+        $p = "D:\lp\" + ("p" * 100)
+        New-Item -ItemType Directory -Force -Path $p | Out-Null
+        "USERPROFILE=$p" >> $env:GITHUB_ENV
 
     - name: Install dependencies
       shell: bash
