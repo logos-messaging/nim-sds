@@ -21,14 +21,11 @@ requires "stew"
 requires "stint"
 requires "metrics"
 requires "results"
-requires "https://github.com/logos-messaging/nim-ffi#801bda4b05bcb0c0e9a9c593a5ce08dd6ed818e5"
+requires "https://github.com/logos-messaging/nim-ffi#d98f77141de9c95c0c543d191a79aee18e7536a4"
 
 # Emits library/generated/sds.h (not checked in), which library/libsds.h includes.
-# ffiMaxRequestPayloadBytes raises nim-ffi's 8 MiB request cap to 64 MiB: status-go
-# unwraps community descriptions of more than 8 MiB (#106).
 const cBindingsFlags =
-  " -d:ffiGenBindings -d:targetLang=c -d:ffiOutputDir=generated -d:ffiSrcPath=../libsds.nim" &
-  " -d:ffiMaxRequestPayloadBytes=67108864"
+  " -d:ffiGenBindings -d:targetLang=c -d:ffiOutputDir=generated -d:ffiSrcPath=../libsds.nim"
 
 proc buildLibrary(
     outLibNameAndExt: string,
