@@ -22,15 +22,23 @@ runs:
       shell: bash
       run: git config --global core.longpaths true
 
-    # Nim's runtime does not use the \\?\ extended-path prefix, so a deep
-    # dependency under the default TEMP still exceeds 260 chars.
-    - name: Shorten the temporary directory
+    - name: Download nimble.exe from nim-lang/nimble#1894
+      if: runner.os == 'Windows'
+      uses: actions/download-artifact@v4
+      with:
+        name: nimble-windows_x64.zip
+        repository: nim-lang/nimble
+        run-id: 38732294244
+        github-token: ${{ inputs.repo-token }}
+        path: ${{ runner.temp }}/nimble-pr
+
+    - name: Use nimble.exe from nim-lang/nimble#1894
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        New-Item -ItemType Directory -Force -Path C:\T | Out-Null
-        "TEMP=C:\T" >> $env:GITHUB_ENV
-        "TMP=C:\T"  >> $env:GITHUB_ENV
+        Expand-Archive "${{ runner.temp }}/nimble-pr/nimble-windows_x64.zip" "${{ runner.temp }}/nimble-pr/bin"
+        "${{ runner.temp }}/nimble-pr/bin" >> $env:GITHUB_PATH
+        & "${{ runner.temp }}/nimble-pr/bin/nimble.exe" --version
 
     - name: Install dependencies
       shell: bash
