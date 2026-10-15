@@ -20,7 +20,15 @@ runs:
     - name: Enable Git long paths
       if: runner.os == 'Windows'
       shell: bash
-      run: git config --global core.longpaths true
+      run: git config --system core.longpaths true
+
+    - name: Use a long profile path
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $p = "D:\lp\" + ("p" * 100)
+        New-Item -ItemType Directory -Force -Path $p | Out-Null
+        "USERPROFILE=$p" >> $env:GITHUB_ENV
 
     - name: Download nimble.exe from nim-lang/nimble#1894
       if: runner.os == 'Windows'
