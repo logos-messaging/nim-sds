@@ -21,7 +21,7 @@ requires "stew"
 requires "stint"
 requires "metrics"
 requires "results"
-requires "https://github.com/logos-messaging/nim-ffi#4c1218626bbbf89e19836845b690937cd255c3f0"
+requires "https://github.com/logos-messaging/nim-ffi#d98f77141de9c95c0c543d191a79aee18e7536a4"
 
 # Emits library/generated/sds.h (not checked in), which library/libsds.h includes.
 const cBindingsFlags =
