@@ -146,21 +146,21 @@ suite "bloom filter special cases":
 
 suite "rolling bloom filter growth":
   test "a young filter is small on the wire":
-    var rbf = RollingBloomFilter.init(DefaultBloomFilterCapacity, 0.001)
+    var rbf = RollingBloomFilter.init(DefaultBloomFilterCapacity, DefaultBloomFilterErrorRate)
     for i in 0 ..< 50:
       rbf.add("msg" & $i)
     let bytes = serializeBloomFilter(rbf.filter).get()
     check bytes.len < 1000
 
   test "grows with the channel and keeps every message":
-    var rbf = RollingBloomFilter.init(DefaultBloomFilterCapacity, 0.001)
+    var rbf = RollingBloomFilter.init(DefaultBloomFilterCapacity, DefaultBloomFilterErrorRate)
     let initial = rbf.filter.capacity
     check initial == InitialBloomFilterCapacity
-    for i in 0 ..< 1000:
+    for i in 0 ..< 400:
       rbf.add("msg" & $i)
     check rbf.filter.capacity > initial
     check rbf.filter.capacity <= DefaultBloomFilterCapacity
-    for i in 0 ..< 1000:
+    for i in 0 ..< 400:
       check rbf.contains("msg" & $i)
 
   test "never grows past the configured capacity":
@@ -170,7 +170,7 @@ suite "rolling bloom filter growth":
     check rbf.filter.capacity == 300
 
   test "grown filter survives a wire round trip":
-    var rbf = RollingBloomFilter.init(DefaultBloomFilterCapacity, 0.001)
+    var rbf = RollingBloomFilter.init(DefaultBloomFilterCapacity, DefaultBloomFilterErrorRate)
     for i in 0 ..< 500:
       rbf.add("msg" & $i)
     let decoded = deserializeBloomFilter(serializeBloomFilter(rbf.filter).get()).get()

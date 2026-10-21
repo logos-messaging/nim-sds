@@ -3,8 +3,8 @@ import ./sds_message_id
 export bloom_filter, sds_message_id
 
 const
-  DefaultBloomFilterCapacity* = 10000
-  DefaultBloomFilterErrorRate* = 0.001
+  DefaultBloomFilterCapacity* = 500
+  DefaultBloomFilterErrorRate* = 0.01
   CapacityFlexPercent* = 20
   InitialBloomFilterCapacity* = 128
     ## Size the filter starts at; it doubles up to the configured capacity as
