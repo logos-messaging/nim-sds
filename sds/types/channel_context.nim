@@ -1,4 +1,4 @@
-import std/[sets, tables]
+import std/[sets, tables, times]
 import ./sds_message_id
 import ./sds_message
 import ./rolling_bloom_filter
@@ -18,6 +18,11 @@ type ChannelContext* = ref object
     ## answered from one place. OrderedTable preserves insertion order for
     ## causal-history tail access and FIFO eviction at maxMessageHistory.
   bloomFilter*: RollingBloomFilter
+  messagesSinceBloom*: int
+    ## Outgoing messages sent since the filter was last attached. Runtime-only.
+  lastBloomAttach*: Time
+    ## When the filter was last attached; the epoch default forces the first
+    ## outgoing message of a channel to carry it. Runtime-only.
   outgoingBuffer*: seq[UnacknowledgedMessage]
   incomingBuffer*: Table[SdsMessageID, IncomingMessage]
   ## SDS-R buffers

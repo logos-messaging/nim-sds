@@ -105,10 +105,21 @@ proc wrapOutgoingMessage*(
         (await rm.updateLamportTimestamp(getTime().toUnix, channelId)).isOkOr:
           return err(error)
 
-        let bfResult = serializeBloomFilter(channel.bloomFilter.filter)
-        if bfResult.isErr():
-          error "Failed to serialize bloom filter", channelId = channelId
-          return err(ReliabilityError.reSerializationError)
+        # The filter dominates small messages, so attach it only every Nth
+        # message or once it has gone stale; in between, causal history
+        # carries the acknowledgements.
+        let sentAt = getTime()
+        inc channel.messagesSinceBloom
+        let attachBloom =
+          channel.messagesSinceBloom >= rm.config.bloomFilterAttachEvery or
+          sentAt - channel.lastBloomAttach >= rm.config.syncMessageInterval
+        var bloomBytes: seq[byte] = @[]
+        if attachBloom:
+          bloomBytes = serializeBloomFilter(channel.bloomFilter.filter).valueOr:
+            error "Failed to serialize bloom filter", channelId = channelId
+            return err(ReliabilityError.reSerializationError)
+          channel.messagesSinceBloom = 0
+          channel.lastBloomAttach = sentAt
 
         # SDS-R: collect eligible expired repair requests to attach. Per
         # spec (sds-r-send-message, RECOMMENDED), prioritise the entries with
@@ -141,7 +152,7 @@ proc wrapOutgoingMessage*(
           causalHistory = causalHistory,
           channelId = channelId,
           content = message,
-          bloomFilter = bfResult.get(),
+          bloomFilter = bloomBytes,
           senderId = rm.participantId,
           repairRequest = repairReqs,
         )
