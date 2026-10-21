@@ -1,5 +1,6 @@
 import unittest, results, strutils
 import sds/bloom
+import sds
 from random import rand, randomize
 
 suite "bloom filter":
@@ -142,3 +143,36 @@ suite "bloom filter special cases":
 
     let fpRate = falsePositives.float / fpTestSize.float
     check fpRate < bf.errorRate * 1.5 # Allow some margin but should be close to target
+
+suite "rolling bloom filter growth":
+  test "a young filter is small on the wire":
+    var rbf = RollingBloomFilter.init(DefaultBloomFilterCapacity, 0.001)
+    for i in 0 ..< 50:
+      rbf.add("msg" & $i)
+    let bytes = serializeBloomFilter(rbf.filter).get()
+    check bytes.len < 1000
+
+  test "grows with the channel and keeps every message":
+    var rbf = RollingBloomFilter.init(DefaultBloomFilterCapacity, 0.001)
+    let initial = rbf.filter.capacity
+    check initial == InitialBloomFilterCapacity
+    for i in 0 ..< 1000:
+      rbf.add("msg" & $i)
+    check rbf.filter.capacity > initial
+    check rbf.filter.capacity <= DefaultBloomFilterCapacity
+    for i in 0 ..< 1000:
+      check rbf.contains("msg" & $i)
+
+  test "never grows past the configured capacity":
+    var rbf = RollingBloomFilter.init(300, 0.01)
+    for i in 0 ..< 300:
+      rbf.add("msg" & $i)
+    check rbf.filter.capacity == 300
+
+  test "grown filter survives a wire round trip":
+    var rbf = RollingBloomFilter.init(DefaultBloomFilterCapacity, 0.001)
+    for i in 0 ..< 500:
+      rbf.add("msg" & $i)
+    let decoded = deserializeBloomFilter(serializeBloomFilter(rbf.filter).get()).get()
+    for i in 0 ..< 500:
+      check decoded.lookup("msg" & $i)
