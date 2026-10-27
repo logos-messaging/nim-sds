@@ -6,7 +6,6 @@ const
   DefaultMaxCausalHistory* = 10
   DefaultResendInterval* = initDuration(seconds = 60)
   DefaultMaxResendAttempts* = 5
-  DefaultBloomFilterAttachEvery* = 5
   DefaultSyncMessageInterval* = initDuration(seconds = 30)
   DefaultBufferSweepInterval* = initDuration(seconds = 60)
   DefaultRepairTMin* = initDuration(seconds = 30)
@@ -23,10 +22,6 @@ type ReliabilityConfig* {.requiresInit.} = object
   bloomFilterCapacity*: int
   bloomFilterErrorRate*: float
   maxMessageHistory*: int
-  bloomFilterAttachEvery*: int
-    ## Attach the bloom filter to every Nth outgoing message (and whenever
-    ## `syncMessageInterval` has passed without one). Messages in between rely
-    ## on causal history. 1 (or less) attaches it to every message.
   maxCausalHistory*: int
   resendInterval*: Duration
   maxResendAttempts*: int
@@ -44,7 +39,6 @@ proc init*(
     bloomFilterCapacity: int = DefaultBloomFilterCapacity,
     bloomFilterErrorRate: float = DefaultBloomFilterErrorRate,
     maxMessageHistory: int = DefaultMaxMessageHistory,
-    bloomFilterAttachEvery: int = DefaultBloomFilterAttachEvery,
     maxCausalHistory: int = DefaultMaxCausalHistory,
     resendInterval: Duration = DefaultResendInterval,
     maxResendAttempts: int = DefaultMaxResendAttempts,
@@ -66,7 +60,6 @@ proc init*(
     bloomFilterCapacity: bloomFilterCapacity,
     bloomFilterErrorRate: bloomFilterErrorRate,
     maxMessageHistory: maxMessageHistory,
-    bloomFilterAttachEvery: bloomFilterAttachEvery,
     maxCausalHistory: maxCausalHistory,
     resendInterval: resendInterval,
     maxResendAttempts: maxResendAttempts,

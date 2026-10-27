@@ -6,9 +6,6 @@ const
   DefaultBloomFilterCapacity* = 500
   DefaultBloomFilterErrorRate* = 0.01
   CapacityFlexPercent* = 20
-  InitialBloomFilterCapacity* = 128
-    ## Size the filter starts at; it doubles up to the configured capacity as
-    ## messages arrive, so young channels do not ship a full-size bit array.
 
 type RollingBloomFilter* {.requiresInit.} = object
   filter*: BloomFilter

@@ -13,8 +13,7 @@ proc init*(
   let targetError =
     if errorRate <= 0.0 or errorRate >= 1.0: DefaultBloomFilterErrorRate else: errorRate
 
-  let filterResult =
-    initializeBloomFilter(min(targetCapacity, InitialBloomFilterCapacity), targetError)
+  let filterResult = initializeBloomFilter(targetCapacity, targetError)
   if filterResult.isErr:
     error "Failed to initialize bloom filter", error = filterResult.error
     if capacity != DefaultBloomFilterCapacity or errorRate != DefaultBloomFilterErrorRate:
@@ -84,21 +83,8 @@ proc clean*(rbf: var RollingBloomFilter) {.gcsafe.} =
   except Exception:
     error "Failed to clean bloom filter", error = getCurrentExceptionMsg()
 
-proc grow(rbf: var RollingBloomFilter) {.gcsafe.} =
-  ## Doubles the allocated filter (capped at `capacity`) and re-inserts the
-  ## known messages. The wire format carries the size, so peers need no change.
-  let newCapacity = min(rbf.filter.capacity * 2, rbf.capacity)
-  var newFilter = initializeBloomFilter(newCapacity, rbf.filter.errorRate).valueOr:
-    error "Failed to grow bloom filter", error = $error
-    return
-  for id in rbf.messages:
-    newFilter.insert(cast[string](id))
-  rbf.filter = newFilter
-
 proc add*(rbf: var RollingBloomFilter, messageId: SdsMessageID) {.gcsafe.} =
   ## Adds a message ID to the rolling bloom filter.
-  if rbf.messages.len >= rbf.filter.capacity and rbf.filter.capacity < rbf.capacity:
-    rbf.grow()
   rbf.filter.insert(cast[string](messageId))
   rbf.messages.add(messageId)
 
