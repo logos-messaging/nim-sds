@@ -3,8 +3,8 @@ import ./sds_message_id
 export bloom_filter, sds_message_id
 
 const
-  DefaultBloomFilterCapacity* = 10000
-  DefaultBloomFilterErrorRate* = 0.001
+  DefaultBloomFilterCapacity* = 500
+  DefaultBloomFilterErrorRate* = 0.01
   CapacityFlexPercent* = 20
 
 type RollingBloomFilter* {.requiresInit.} = object

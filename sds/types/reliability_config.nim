@@ -2,7 +2,7 @@ import std/times
 import chronicles
 
 const
-  DefaultMaxMessageHistory* = 1000
+  DefaultMaxMessageHistory* = 500
   DefaultMaxCausalHistory* = 10
   DefaultResendInterval* = initDuration(seconds = 60)
   DefaultMaxResendAttempts* = 5
