@@ -132,6 +132,10 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
     quit "Error: Xcode/iOS SDK not found"
 
   let aFile = outDir & "/libsds.a"
+  # nimble exits 0 on a failed task: drop the old archive so a failure can't
+  # leave a stale one for consumers to pick up.
+  if fileExists aFile:
+    rmFile aFile
   let cpu = getMyCpu()
   let clangArch = if cpu == "amd64": "x86_64" else: cpu
 
@@ -143,7 +147,10 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
     " " & srcDir & "/libsds.nim"
 
   # 2) Compile all generated C files to object files with hidden visibility
-  # This prevents symbol conflicts with other Nim libraries (e.g., libnim_status_client)
+  # This prevents symbol conflicts with other Nim libraries (e.g., libnim_status_client).
+  # -fno-common: uninitialized globals (Nim's type info, e.g. NTIstring) would
+  # otherwise be common symbols, which ld -r keeps global and the final link
+  # merges with the host's own, letting this refc runtime overwrite them.
   # nimbase.h lives in lib/, next to the resolved compiler's bin/.
   let (nimBin, _) = gorgeEx("which nim")
   let nimLibDir = parentDir(parentDir(nimBin.strip())) / "lib"
@@ -151,7 +158,7 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
     quit "Error: nimbase.h not found in " & nimLibDir
   let clangFlags =
     "-arch " & clangArch & " -isysroot " & sdkPath & " -I" & nimLibDir &
-    " -fembed-bitcode -miphoneos-version-min=16.2 -O2" & " -fvisibility=hidden"
+    " -fembed-bitcode -miphoneos-version-min=16.2 -O2" & " -fvisibility=hidden -fno-common"
 
   var objectFiles: seq[string] = @[]
   for cFile in listFiles(nimcacheDir):
@@ -169,6 +176,9 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
   let mergedObj = outDir & "/libsds_merged.o"
   exec "xcrun ld -r -arch " & clangArch & " -exported_symbol '_sds_*' -o " & mergedObj &
     " -filelist " & objListFile
+  let (commons, _) = gorgeEx("nm " & mergedObj & " | grep ' C ' || true")
+  if commons.strip.len > 0:
+    quit "Error: libsds leaks common symbols:\n" & commons
   exec "ar rcs " & aFile & " " & mergedObj
   exec "rm -f " & mergedObj & " " & objListFile
 
