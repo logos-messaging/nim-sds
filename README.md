@@ -123,6 +123,20 @@ by running `nix build` and updating the hash from the error output.
 
 </details>
 
+## Building as an embedded library
+
+An embedder that resolves the dependencies itself runs the tasks without nimble, through a
+`.nims` file that includes `sds.nimble`:
+
+```bash
+printf 'include "%s"\n' <pkg>/sds.nimble > "$LIB_OUT_DIR/sds.nims"
+NIM_PARAMS='--path:"<dep>" --mm:orc -d:useMalloc' nim --skipUserCfg --skipParentCfg libsdsStaticMac "$LIB_OUT_DIR/sds.nims"
+```
+
+`NIM` picks the compiler, `NIM_PARAMS` goes last on every `nim c`, and `LIB_OUT_DIR` receives
+every output (library, `libsds.h`, `generated/`, nimcache), so the package dir can be read-only.
+With `LIB_OUT_DIR` set, dependencies come only from the `NIM_PARAMS` `--path`s.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
