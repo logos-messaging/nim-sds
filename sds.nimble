@@ -59,10 +59,13 @@ proc embeddedParams(): string =
     quit "Error: LIB_OUT_DIR selects the embedded build: pass the dependency --paths in NIM_PARAMS"
   " --skipUserCfg --skipParentCfg --noNimblePath --path:" & quoteShell(pkgDir / "sds")
 
-proc nimcacheParam(name: string): string =
-  ## Keeps nimcache under LIB_OUT_DIR; without it nim.cfg's build/nimcache applies.
-  if not isEmbedded(): ""
-  else: " --nimcache:" & quoteShell(outDir() / "nimcache" / name)
+proc nimcacheDir(target: string): string =
+  ## One nimcache per target: nim reuses an object whose C source is unchanged,
+  ## so targets sharing a cache could link objects built for another one.
+  outDir() / "nimcache" / target
+
+proc nimcacheParam(target: string): string =
+  " --nimcache:" & quoteShell(nimcacheDir(target))
 
 # Emits generated/sds.h (not checked in), which libsds.h includes: next to
 # library/libsds.h by default, or under LIB_OUT_DIR next to a copy of libsds.h.
@@ -75,34 +78,6 @@ proc cBindingsFlags(): string =
 proc copyHeader(srcDir: string) =
   if isEmbedded():
     cpFile(srcDir / "libsds.h", outDir() / "libsds.h")
-
-proc buildLibrary(
-    outLibNameAndExt: string,
-    name: string,
-    srcDir = "./",
-    extra_params = "",
-    `type` = "static",
-) =
-  # An embedder that resolves dependencies itself passes --path here.
-  let params = extra_params & embeddedParams() & nimcacheParam(name) & nimParams()
-  let outDir = outDir()
-  if not dirExists outDir:
-    mkDir outDir
-
-  if `type` == "static":
-    exec nimExe().quoteShell & " c" & " --out:" & quoteShell(outDir / outLibNameAndExt) &
-      " --threads:on --app:staticlib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags() & " " &
-      params & " " & quoteShell(srcDir / name & ".nim")
-  else:
-    when defined(windows):
-      exec nimExe().quoteShell & " c" & " --out:" & quoteShell(outDir / outLibNameAndExt) &
-        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags() & " " &
-        params & " " & quoteShell(srcDir / name & ".nim")
-    else:
-      exec nimExe().quoteShell & " c" & " --out:" & quoteShell(outDir / outLibNameAndExt) &
-        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags() & " " &
-        params & " " & quoteShell(srcDir / name & ".nim")
-  copyHeader(srcDir)
 
 proc getMyCpu(): string =
   ## Returns a Nim-compatible CPU name (e.g. amd64, arm64) for the host.
@@ -124,6 +99,36 @@ proc getMyCpu(): string =
         "arm64"
       else:
         a
+
+proc buildLibrary(
+    outLibNameAndExt: string,
+    name: string,
+    srcDir = "./",
+    extra_params = "",
+    `type` = "static",
+) =
+  # An embedder that resolves dependencies itself passes --path here.
+  let target = name & "-" & `type` & "-" & getMyCpu()
+  let params = extra_params & embeddedParams() & nimcacheParam(target) & nimParams()
+  let outDir = outDir()
+  if not dirExists outDir:
+    mkDir outDir
+
+  if `type` == "static":
+    exec nimExe().quoteShell & " c" & " --out:" & quoteShell(outDir / outLibNameAndExt) &
+      " --threads:on --app:staticlib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags() & " " &
+      params & " " & quoteShell(srcDir / name & ".nim")
+  else:
+    when defined(windows):
+      exec nimExe().quoteShell & " c" & " --out:" & quoteShell(outDir / outLibNameAndExt) &
+        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags() & " " &
+        params & " " & quoteShell(srcDir / name & ".nim")
+    else:
+      exec nimExe().quoteShell & " c" & " --out:" & quoteShell(outDir / outLibNameAndExt) &
+        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags() & " " &
+        params & " " & quoteShell(srcDir / name & ".nim")
+  copyHeader(srcDir)
+
 
 # Tasks
 const testNames =
@@ -183,7 +188,7 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
 
   let embedded = embeddedParams()
   let outDir = outDir()
-  let nimcacheDir = outDir / "nimcache" / "ios"
+  let nimcacheDir = nimcacheDir("ios-" & sdkPath.splitFile.name.toLowerAscii & "-" & getMyCpu())
   if dirExists nimcacheDir:
     rmDir nimcacheDir
   if not dirExists outDir:
@@ -325,7 +330,7 @@ proc buildMobileAndroid(srcDir = ".", extra_params = "") =
     " --header" &
     " " & extra_params &
     embedded &
-    nimcacheParam("libsds") &
+    nimcacheParam("android-" & cpu) &
     nimParams() &
     " " & quoteShell(srcDir / "libsds.nim")
   copyHeader(srcDir)
