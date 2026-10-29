@@ -28,6 +28,11 @@ requires "https://github.com/logos-messaging/nim-ffi#d98f77141de9c95c0c543d191a7
 # receives every output (nothing lands in the package dir).
 const pkgDir = currentSourcePath().parentDir
 
+proc isEmbedded(): bool =
+  ## LIB_OUT_DIR selects the embedded build, which runs without nimble and writes
+  ## nothing into the package dir; unset, the nimble-driven build applies.
+  getEnv("LIB_OUT_DIR").len > 0
+
 proc nimExe(): string =
   ## The compiler from NIM, else the one running this task.
   let nim = getEnv("NIM")
@@ -47,7 +52,7 @@ proc embeddedParams(): string =
   ## With LIB_OUT_DIR, dependencies come only from the embedder's NIM_PARAMS --paths:
   ## skip user and parent configs (config.nims includes nimble.paths), and add
   ## the sds/ path it would have added.
-  if getEnv("LIB_OUT_DIR").len == 0:
+  if not isEmbedded():
     return ""
   let params = getEnv("NIM_PARAMS")
   if "--path" notin params and "-p:" notin params and "-p=" notin params:
@@ -56,19 +61,19 @@ proc embeddedParams(): string =
 
 proc nimcacheParam(name: string): string =
   ## Keeps nimcache under LIB_OUT_DIR; without it nim.cfg's build/nimcache applies.
-  if getEnv("LIB_OUT_DIR").len == 0: ""
+  if not isEmbedded(): ""
   else: " --nimcache:" & quoteShell(outDir() / "nimcache" / name)
 
 # Emits generated/sds.h (not checked in), which libsds.h includes: next to
 # library/libsds.h by default, or under LIB_OUT_DIR next to a copy of libsds.h.
 proc cBindingsFlags(): string =
-  if getEnv("LIB_OUT_DIR").len == 0:
+  if not isEmbedded():
     " -d:ffiGenBindings -d:targetLang=c -d:ffiOutputDir=generated -d:ffiSrcPath=../libsds.nim"
   else:
     " -d:ffiGenBindings -d:targetLang=c -d:ffiOutputDir=" & quoteShell(outDir() / "generated")
 
 proc copyHeader(srcDir: string) =
-  if getEnv("LIB_OUT_DIR").len > 0:
+  if isEmbedded():
     cpFile(srcDir / "libsds.h", outDir() / "libsds.h")
 
 proc buildLibrary(
@@ -87,16 +92,16 @@ proc buildLibrary(
   if `type` == "static":
     exec nimExe().quoteShell & " c" & " --out:" & quoteShell(outDir / outLibNameAndExt) &
       " --threads:on --app:staticlib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags() & " " &
-      params & " " & srcDir & name & ".nim"
+      params & " " & quoteShell(srcDir / name & ".nim")
   else:
     when defined(windows):
       exec nimExe().quoteShell & " c" & " --out:" & quoteShell(outDir / outLibNameAndExt) &
         " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags() & " " &
-        params & " " & srcDir & name & ".nim"
+        params & " " & quoteShell(srcDir / name & ".nim")
     else:
       exec nimExe().quoteShell & " c" & " --out:" & quoteShell(outDir / outLibNameAndExt) &
         " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags() & " " &
-        params & " " & srcDir & name & ".nim"
+        params & " " & quoteShell(srcDir / name & ".nim")
   copyHeader(srcDir)
 
 proc getMyCpu(): string =
@@ -178,7 +183,7 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
 
   let embedded = embeddedParams()
   let outDir = outDir()
-  let nimcacheDir = outDir / "nimcache"
+  let nimcacheDir = outDir / "nimcache" / "ios"
   if dirExists nimcacheDir:
     rmDir nimcacheDir
   if not dirExists outDir:
@@ -200,7 +205,7 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
   exec nimExe().quoteShell & " c" & " --nimcache:" & quoteShell(nimcacheDir) & " --os:ios --cpu:" & cpu &
     " --compileOnly:on" & " --noMain --mm:refc" & " --threads:on --opt:size --header" &
     " --nimMainPrefix:libsds" & cBindingsFlags() & " --cc:clang" & " -d:useMalloc" & " -d:noSignalHandler" &
-    embedded & nimParams() & " " & srcDir & "/libsds.nim"
+    embedded & nimParams() & " " & quoteShell(srcDir / "libsds.nim")
 
   # 2) Compile all generated C files to object files with hidden visibility
   # This prevents symbol conflicts with other Nim libraries (e.g., libnim_status_client).
@@ -322,7 +327,7 @@ proc buildMobileAndroid(srcDir = ".", extra_params = "") =
     embedded &
     nimcacheParam("libsds") &
     nimParams() &
-    " " & srcDir & "/libsds.nim"
+    " " & quoteShell(srcDir / "libsds.nim")
   copyHeader(srcDir)
 
 task libsdsAndroid, "Build the mobile bindings for Android (uses ARCH env var)":
@@ -359,7 +364,7 @@ task libsds, "Build the shared library for the current platform":
     buildDesktopLib "libsds.so", "dynamic"
 
 task clean, "Remove build artifacts":
-  if getEnv("LIB_OUT_DIR").len == 0:
+  if not isEmbedded():
     if dirExists "build":
       rmDir "build"
   else:
