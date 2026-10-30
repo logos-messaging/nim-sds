@@ -149,8 +149,7 @@ nix develop --command nimble test
 
 ```bash
 nimble libsds        # shared library for the current platform
-nimble libsdsStatic  # static library for the current platform
-nimble libsdsIOS     # sealed static library; NIM_PARAMS has the SDK flags
+nimble libsdsStatic  # static library; on a Mac it exports only the C API
 ```
 
 **Nix** (`flake.nix`) and **Make** (`Makefile`) are optional conveniences that wrap Nimble for reproducible and cross-platform (including Android/iOS) builds.
