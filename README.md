@@ -127,8 +127,7 @@ The caller chooses everything about the build except what the library needs itse
 A project that resolves dependencies itself runs the tasks with plain `nim`, so its resolution stays in charge. `nimble` in this directory would resolve `nimble.lock` instead:
 
 ```bash
-printf 'include "%s/sds.nimble"\n' "$PKG" > sds.nims
-NIM_PARAMS="--skipParentCfg $(tr '\n' ' ' < nimble.paths)" nim --skipParentCfg libsds sds.nims
+NIM_PARAMS="--skipParentCfg $(tr '\n' ' ' < nimble.paths)" nim --skipParentCfg libsds "$(nimble path sds)/libsds.nims"
 ```
 
 </details>
