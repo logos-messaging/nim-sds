@@ -1,7 +1,7 @@
 {
   pkgs,
   src ? ../.,
-  # Nimble targets to build (task names from sds.nimble).
+  # Outputs to build: libsds, libsdsIOS or libsdsAndroid<Arch>.
   targets ? ["libsdsAndroidArm64"],
   # These are the only platforms tested in CI and considered stable.
   stableSystems ? ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" "x86_64-windows"],
@@ -16,6 +16,28 @@ let
   isAndroidBuild = any containsAndroid targets;
 
   tools = callPackage ./tools.nix {};
+
+  ndkClang = triple: "${pkgs.androidPkgs.ndk}/toolchains/llvm/prebuilt/"
+    + (if stdenv.isDarwin then "darwin" else "linux") + "-x86_64/bin/${triple}30-clang";
+  androidParams = cpu: triple:
+    "--os:android --cpu:${cpu} --cc:clang --clang.exe:${ndkClang triple}"
+    + " --clang.linkerexe:${ndkClang triple} -d:chronicles_log_level=ERROR";
+
+  # sds.nimble's task and the target flags for each output.
+  buildCommand = target: {
+    libsds = {
+      task = "libsds";
+      params = "-d:chronicles_line_numbers -d:chronicles_log_level=TRACE";
+    };
+    libsdsIOS = {
+      task = "libsdsStatic";
+      params = "--os:ios --cpu:arm64 --cc:clang --passC:\"-arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path)\"";
+    };
+    libsdsAndroidArm64 = { task = "libsds"; params = androidParams "arm64" "aarch64-linux-android"; };
+    libsdsAndroidAmd64 = { task = "libsds"; params = androidParams "amd64" "x86_64-linux-android"; };
+    libsdsAndroidX86 = { task = "libsds"; params = androidParams "i386" "i686-linux-android"; };
+    libsdsAndroidArm = { task = "libsds"; params = androidParams "arm" "armv7a-linux-androideabi"; };
+  }.${target};
 
   revision = substring 0 8 (src.rev or src.dirtyRev or "00000000");
   version = tools.findKeyValue "^version = \"([a-f0-9.-]+)\"$" ../sds.nimble;
@@ -114,8 +136,10 @@ in stdenv.mkDerivation {
 
   # --useSystemNim: the sandbox has no network, so nimble must not try to fetch
   # the Nim pinned in nimble.lock. Nix supplies the compiler instead.
-  buildPhase = lib.concatMapStringsSep "\n" (target: ''
-    nimble --useSystemNim --verbose ${target}
+  buildPhase = lib.concatMapStringsSep "\n" (target: let
+    command = buildCommand target;
+  in ''
+    NIM_PARAMS="--mm:refc --opt:size ${command.params}" nimble --useSystemNim --verbose ${command.task}
   '') targets;
 
   installPhase = let
@@ -124,15 +148,17 @@ in stdenv.mkDerivation {
     '';
   in if isAndroidBuild then ''
     mkdir -p $out/jni
-    cp -r build/* $out/jni/
+    cp build/libsds.so build/libsds.h $out/jni/
+    cp -r build/generated $out/jni/
     echo '${androidManifest}' > $out/jni/AndroidManifest.xml
     cd $out
     zip -r libwaku.aar *
   '' else ''
     mkdir -p $out/lib -p $out/include
-    cp build/lib* $out/lib/
-    cp library/libsds.h $out/include/
-    cp -r library/generated $out/include/
+    cp build/libsds.* $out/lib/
+    rm $out/lib/libsds.h
+    cp build/libsds.h $out/include/
+    cp -r build/generated $out/include/
   '';
 
   meta = with pkgs.lib; {

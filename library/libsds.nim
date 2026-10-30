@@ -10,6 +10,9 @@
 ## pointer, which has no sensible JSON representation, so it is hand-written and
 ## dispatched to the worker thread to store the provider in a thread-local.
 
+when not compileOption("threads"):
+  {.error: "libsds needs --threads:on".}
+
 import std/[base64, json]
 import ffi
 import sds
