@@ -33,12 +33,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: linux, runs-on: ubuntu-latest, task: libsdsDynamicLinux }
-          - { name: linux, runs-on: ubuntu-latest, task: libsdsStaticLinux }
-          - { name: macos, runs-on: macos-latest, task: libsdsDynamicMac }
-          - { name: macos, runs-on: macos-latest, task: libsdsStaticMac }
-          - { name: windows, runs-on: windows-latest, task: libsdsDynamicWindows }
-          - { name: windows, runs-on: windows-latest, task: libsdsStaticWindows }
+          - { name: linux, runs-on: ubuntu-latest, task: libsds }
+          - { name: linux, runs-on: ubuntu-latest, task: libsdsStatic }
+          - { name: macos, runs-on: macos-latest, task: libsds }
+          - { name: macos, runs-on: macos-latest, task: libsdsStatic }
+          - { name: windows, runs-on: windows-latest, task: libsds }
+          - { name: windows, runs-on: windows-latest, task: libsdsStatic }
     steps:
       - uses: actions/checkout@v4
 
@@ -47,16 +47,26 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build ${{ matrix.task }}
+        env:
+          NIM_PARAMS: --mm:refc --opt:size
         run: nimble ${{ matrix.task }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.task }}
-          path: build/
+          name: ${{ matrix.name }}-${{ matrix.task }}
+          path: build/lib*
 
+  # The mobile jobs build the way an application does: the target comes from the
+  # caller, and nothing about it lives in sds.nimble.
   build-ios:
-    name: 'macos / libsdsIOS'
+    name: 'ios / ${{ matrix.sdk }} ${{ matrix.arch }}'
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { sdk: iphoneos, arch: arm64, min: -miphoneos-version-min=13.0 }
+          - { sdk: iphonesimulator, arch: arm64, min: -mios-simulator-version-min=14.0 }
     steps:
       - uses: actions/checkout@v4
 
@@ -71,20 +81,27 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build libsdsIOS
-        run: nimble libsdsIOS
+        env:
+          IOS_ARCH: ${{ matrix.arch }}
+        run: |
+          flags="-arch ${{ matrix.arch }} -isysroot $(xcrun --sdk ${{ matrix.sdk }} --show-sdk-path) ${{ matrix.min }}"
+          NIM_PARAMS="--mm:refc --opt:size --passC:\"$flags\" --passL:\"$flags\"" nimble libsdsIOS
 
       - uses: actions/upload-artifact@v4
         with:
-          name: libsdsIOS
-          path: build/
+          name: ios-${{ matrix.sdk }}-${{ matrix.arch }}
+          path: build/lib*
 
   build-android:
-    name: 'linux / ${{ matrix.task }}'
+    name: 'android / ${{ matrix.cpu }}'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        task: [libsdsAndroidArm64, libsdsAndroidAmd64, libsdsAndroidX86]
+        include:
+          - { cpu: arm64, triple: aarch64-linux-android }
+          - { cpu: amd64, triple: x86_64-linux-android }
+          - { cpu: i386, triple: i686-linux-android }
     steps:
       - uses: actions/checkout@v4
 
@@ -97,12 +114,12 @@ jobs:
         with:
           ndk-version: r27c
 
-      - name: Build ${{ matrix.task }}
-        env:
-          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: nimble ${{ matrix.task }}
+      - name: Build libsds
+        run: |
+          cc="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.triple }}28-clang"
+          NIM_PARAMS="--mm:refc --opt:size --os:android --cpu:${{ matrix.cpu }} --cc:clang --clang.exe:$cc --clang.linkerexe:$cc -d:chronicles_log_level=ERROR" nimble libsds
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.task }}
-          path: build/
+          name: android-${{ matrix.cpu }}
+          path: build/lib*

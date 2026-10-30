@@ -148,10 +148,9 @@ nix develop --command nimble test
 **Nimble** is the primary build tool. Desktop library targets:
 
 ```bash
-nimble libsdsDynamicMac      # macOS .dylib
-nimble libsdsDynamicLinux    # Linux .so
-nimble libsdsStaticMac       # macOS .a
-nimble libsdsStaticLinux     # Linux .a
+nimble libsds        # shared library for the current platform
+nimble libsdsStatic  # static library for the current platform
+nimble libsdsIOS     # sealed static library; NIM_PARAMS has the SDK flags
 ```
 
 **Nix** (`flake.nix`) and **Make** (`Makefile`) are optional conveniences that wrap Nimble for reproducible and cross-platform (including Android/iOS) builds.
