@@ -58,10 +58,12 @@ task test, "Run the test suite":
   exec "nim c -r --outdir:build tests/test_wire_compat.nim"
 
 task libsds, "Build the shared library; NIM_PARAMS selects another target":
-  let name =
-    when defined(windows): "libsds.dll"
-    elif defined(macosx): "libsds.dylib"
-    else: "libsds.so"
+  # The task runs on the build host, so a cross build names its extension.
+  let hostExt =
+    when defined(windows): "dll"
+    elif defined(macosx): "dylib"
+    else: "so"
+  let name = "libsds." & getEnv("LIB_EXT", hostExt)
   compileLibrary "--app:lib --out:" & (outDir() / name).quoteShell
 
 task libsdsStatic, "Build the static library; NIM_PARAMS selects another target":
