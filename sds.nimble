@@ -10,6 +10,7 @@ srcDir = "sds"
 # A dependent builds libsds from the installed package, so ship library/ too.
 # Naming any directory turns off the default srcDir install, hence sds/ here.
 installDirs = @["library", "sds"]
+installFiles = @["libsds.nims"]
 
 # Dependencies
 requires "nim >= 2.2.6"
@@ -30,8 +31,7 @@ requires "https://github.com/logos-messaging/nim-ffi#d98f77141de9c95c0c543d191a7
 #
 # An embedder that resolves dependencies itself runs them with plain nim, so its
 # resolution stays in charge:
-#   printf 'include "%s/sds.nimble"\n' "$PKG" > sds.nims
-#   nim --skipParentCfg libsds sds.nims
+#   nim --skipParentCfg libsds "$(nimble path sds)/libsds.nims"
 const pkgDir = currentSourcePath().parentDir
 
 proc nimExe(): string =
