@@ -30,7 +30,7 @@ let
       params = "-d:chronicles_line_numbers -d:chronicles_log_level=TRACE";
     };
     libsdsIOS = {
-      task = "libsdsIOS";
+      task = "libsdsStatic";
       params = "--passC:\"-arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path)\"";
     };
     libsdsAndroidArm64 = { task = "libsds"; params = androidParams "arm64" "aarch64-linux-android"; };

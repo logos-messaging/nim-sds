@@ -80,12 +80,10 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build libsdsIOS
-        env:
-          IOS_ARCH: ${{ matrix.arch }}
+      - name: Build libsdsStatic
         run: |
           flags="-arch ${{ matrix.arch }} -isysroot $(xcrun --sdk ${{ matrix.sdk }} --show-sdk-path) ${{ matrix.min }}"
-          NIM_PARAMS="--mm:refc --opt:size --passC:\"$flags\" --passL:\"$flags\"" nimble libsdsIOS
+          NIM_PARAMS="--mm:refc --opt:size --passC:\"$flags\" --passL:\"$flags\"" nimble libsdsStatic
 
       - uses: actions/upload-artifact@v4
         with:

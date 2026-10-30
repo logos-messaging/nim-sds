@@ -66,42 +66,41 @@ task libsds, "Build the shared library; NIM_PARAMS selects another target":
 
 task libsdsStatic, "Build the static library; NIM_PARAMS selects another target":
   let name = when defined(windows): "libsds.lib" else: "libsds.a"
-  compileLibrary "--app:staticlib --out:" & (outDir() / name).quoteShell
-
-task libsdsIOS, "Build the static library for iOS with only the C API visible; IOS_ARCH and NIM_PARAMS select the target":
-  let dir = outDir()
-  let arch = getEnv("IOS_ARCH", "arm64")
-  let cpu = if arch == "x86_64": "amd64" else: arch
-  let aFile = dir / "libsds.a"
+  let aFile = outDir() / name
   # nimble exits 0 on a failed task: drop the old archive so a failure can't
   # leave a stale one for consumers to pick up.
   rmFile aFile
-  rmDir dir / "nimcache"
-  # -fno-common: uninitialized globals (Nim's type info, e.g. NTIstring) would
-  # otherwise be common symbols, which ld -r keeps global and the final link
-  # merges with the host's own.
-  compileLibrary "--os:ios --cpu:" & cpu & " --cc:clang --noLinking" &
-    " --passC:-fvisibility=hidden --passC:-fno-common"
-
-  # Merge into one object exporting only the C API, so libsds's Nim runtime
-  # can't clash with other static Nim libs (e.g. libnim_status_client).
-  # (libtool -static ignores -exported_symbols_list on current Xcode; ld -r works.
-  # Objects go through a response file: too many long paths for one command line.)
-  var objects: seq[string]
-  for file in listFiles(dir / "nimcache"):
-    if file.endsWith(".o"):
-      objects.add file
-  let objList = dir / "objects.txt"
-  let merged = dir / "libsds_merged.o"
-  writeFile objList, objects.join("\n")
-  exec "xcrun ld -r -arch " & arch & " -exported_symbol '_sds_*' -o " &
-    merged.quoteShell & " -filelist " & objList.quoteShell
-  let (commons, _) = gorgeEx("nm " & merged.quoteShell & " | grep ' C ' || true")
-  if commons.strip.len > 0:
-    quit "Error: libsds leaks common symbols:\n" & commons
-  exec "ar rcs " & aFile.quoteShell & " " & merged.quoteShell
-  rmFile merged
-  rmFile objList
+  when defined(macosx):
+    # Mach-O, for macOS and iOS: merge into one object exporting only the C API,
+    # so libsds's Nim runtime can't clash with other static Nim libs in one link
+    # (e.g. libnim_status_client). libtool -static ignores
+    # -exported_symbols_list on current Xcode; ld -r works.
+    # -fno-common: uninitialized globals (Nim's type info, e.g. NTIstring) would
+    # otherwise be common symbols, which ld -r keeps global and the final link
+    # merges with the host's own.
+    rmDir outDir() / "nimcache"
+    compileLibrary "--app:staticlib --out:" & aFile.quoteShell &
+      " --passC:-fvisibility=hidden --passC:-fno-common"
+    let arch = gorge("xcrun lipo -archs " & aFile.quoteShell).strip()
+    # Objects go through a response file: too many long paths for one command line.
+    var objects: seq[string]
+    for file in listFiles(outDir() / "nimcache"):
+      if file.endsWith(".o"):
+        objects.add file
+    let objList = outDir() / "objects.txt"
+    let merged = outDir() / "libsds_merged.o"
+    writeFile objList, objects.join("\n")
+    exec "xcrun ld -r -arch " & arch & " -exported_symbol '_sds_*' -o " &
+      merged.quoteShell & " -filelist " & objList.quoteShell
+    let (commons, _) = gorgeEx("nm " & merged.quoteShell & " | grep ' C ' || true")
+    if commons.strip.len > 0:
+      quit "Error: libsds leaks common symbols:\n" & commons
+    rmFile aFile
+    exec "ar rcs " & aFile.quoteShell & " " & merged.quoteShell
+    rmFile merged
+    rmFile objList
+  else:
+    compileLibrary "--app:staticlib --out:" & aFile.quoteShell
 
 task clean, "Remove build artifacts":
   if dirExists outDir():

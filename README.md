@@ -123,7 +123,6 @@ The caller chooses everything about the build except what the library needs itse
 | `NIM` | The compiler. Defaults to `nim`. |
 | `NIM_PARAMS` | Target and policy flags, plus the `--path` of every dependency. Goes last on every compile, so it wins. |
 | `LIB_OUT_DIR` | Where the library, `libsds.h`, `generated/` and nimcache go. Defaults to `build/`. |
-| `IOS_ARCH` | `libsdsIOS` only: the architecture to merge the objects for. Defaults to `arm64`. |
 
 A project that resolves dependencies itself runs the tasks with plain `nim`, so its resolution stays in charge. `nimble` in this directory would resolve `nimble.lock` instead:
 
