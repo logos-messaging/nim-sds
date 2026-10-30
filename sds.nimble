@@ -1,4 +1,4 @@
-import strutils, os
+import std/[json, os, strutils]
 
 # Package
 version = "0.4.0"
@@ -23,36 +23,61 @@ requires "metrics"
 requires "results"
 requires "https://github.com/logos-messaging/nim-ffi#d98f77141de9c95c0c543d191a79aee18e7536a4"
 
-# Emits library/generated/sds.h (not checked in), which library/libsds.h includes.
-const cBindingsFlags =
-  " -d:ffiGenBindings -d:targetLang=c -d:ffiOutputDir=generated -d:ffiSrcPath=../libsds.nim"
+# An embedder runs these tasks without nimble, from a `.nims` file that includes this
+# one. NIM picks the compiler, NIM_PARAMS goes last on every `nim c`, and LIB_OUT_DIR
+# receives every output (nothing lands in the package dir).
+const pkgDir = currentSourcePath().parentDir
 
-proc buildLibrary(
-    outLibNameAndExt: string,
-    name: string,
-    srcDir = "./",
-    extra_params = "",
-    `type` = "static",
-) =
-  if not dirExists "build":
-    mkDir "build"
+proc isEmbedded(): bool =
+  ## LIB_OUT_DIR selects the embedded build, which runs without nimble and writes
+  ## nothing into the package dir; unset, the nimble-driven build applies.
+  getEnv("LIB_OUT_DIR").len > 0
 
-  # An embedder that resolves dependencies itself passes --path here.
-  let params = extra_params & " " & getEnv("NIM_PARAMS")
+proc nimExe(): string =
+  ## The compiler from NIM, else the one running this task.
+  let nim = getEnv("NIM")
+  if nim.len > 0: nim else: getCurrentCompilerExe()
 
-  if `type` == "static":
-    exec "nim c" & " --out:build/" & outLibNameAndExt &
-      " --threads:on --app:staticlib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags & " " &
-      params & " " & srcDir & name & ".nim"
+proc nimParams(): string =
+  " " & getEnv("NIM_PARAMS")
+
+proc outDir(): string =
+  ## LIB_OUT_DIR as an absolute path, else build/ in the working directory.
+  let dir = getEnv("LIB_OUT_DIR")
+  if dir.len == 0: "build"
+  elif dir.isAbsolute: dir
+  else: getCurrentDir() / dir
+
+proc embeddedParams(): string =
+  ## With LIB_OUT_DIR, dependencies come only from the embedder's NIM_PARAMS --paths:
+  ## skip user and parent configs (config.nims includes nimble.paths), and add
+  ## the sds/ path it would have added.
+  if not isEmbedded():
+    return ""
+  let params = getEnv("NIM_PARAMS")
+  if "--path" notin params and "-p:" notin params and "-p=" notin params:
+    quit "Error: LIB_OUT_DIR selects the embedded build: pass the dependency --paths in NIM_PARAMS"
+  " --skipUserCfg --skipParentCfg --noNimblePath --path:" & quoteShell(pkgDir / "sds")
+
+proc nimcacheDir(target: string): string =
+  ## One nimcache per target: nim reuses an object whose C source is unchanged,
+  ## so targets sharing a cache could link objects built for another one.
+  outDir() / "nimcache" / target
+
+proc nimcacheParam(target: string): string =
+  " --nimcache:" & quoteShell(nimcacheDir(target))
+
+# Emits generated/sds.h (not checked in), which libsds.h includes: next to
+# library/libsds.h by default, or under LIB_OUT_DIR next to a copy of libsds.h.
+proc cBindingsFlags(): string =
+  if not isEmbedded():
+    " -d:ffiGenBindings -d:targetLang=c -d:ffiOutputDir=generated"
   else:
-    when defined(windows):
-      exec "nim c" & " --out:build/" & outLibNameAndExt &
-        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags & " " &
-        params & " " & srcDir & name & ".nim"
-    else:
-      exec "nim c" & " --out:build/" & outLibNameAndExt &
-        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags & " " &
-        params & " " & srcDir & name & ".nim"
+    " -d:ffiGenBindings -d:targetLang=c -d:ffiOutputDir=" & quoteShell(outDir() / "generated")
+
+proc copyHeader(srcDir: string) =
+  if isEmbedded():
+    cpFile(srcDir / "libsds.h", outDir() / "libsds.h")
 
 proc getMyCpu(): string =
   ## Returns a Nim-compatible CPU name (e.g. amd64, arm64) for the host.
@@ -75,13 +100,44 @@ proc getMyCpu(): string =
       else:
         a
 
+proc buildLibrary(
+    outLibNameAndExt: string,
+    name: string,
+    srcDir = "./",
+    extra_params = "",
+    `type` = "static",
+) =
+  # An embedder that resolves dependencies itself passes --path here.
+  let target = name & "-" & `type` & "-" & getMyCpu()
+  let params = extra_params & embeddedParams() & nimcacheParam(target) & nimParams()
+  let outDir = outDir()
+  if not dirExists outDir:
+    mkDir outDir
+
+  if `type` == "static":
+    exec nimExe().quoteShell & " c" & " --out:" & quoteShell(outDir / outLibNameAndExt) &
+      " --threads:on --app:staticlib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags() & " " &
+      params & " " & quoteShell(srcDir / name & ".nim")
+  else:
+    when defined(windows):
+      exec nimExe().quoteShell & " c" & " --out:" & quoteShell(outDir / outLibNameAndExt) &
+        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags() & " " &
+        params & " " & quoteShell(srcDir / name & ".nim")
+    else:
+      exec nimExe().quoteShell & " c" & " --out:" & quoteShell(outDir / outLibNameAndExt) &
+        " --threads:on --app:lib --opt:size --noMain --mm:refc --header --nimMainPrefix:libsds -d:noSignalHandler" & cBindingsFlags() & " " &
+        params & " " & quoteShell(srcDir / name & ".nim")
+  copyHeader(srcDir)
+
+
 # Tasks
+const testNames =
+  ["test_bloom", "test_reliability", "test_persistence", "test_snapshot_codec", "test_wire_compat"]
+
 task test, "Run the test suite":
-  exec "nim c -r --outdir:build tests/test_bloom.nim"
-  exec "nim c -r --outdir:build tests/test_reliability.nim"
-  exec "nim c -r --outdir:build tests/test_persistence.nim"
-  exec "nim c -r --outdir:build tests/test_snapshot_codec.nim"
-  exec "nim c -r --outdir:build tests/test_wire_compat.nim"
+  for name in testNames:
+    exec nimExe().quoteShell & " c -r --outdir:" & quoteShell(outDir()) &
+      embeddedParams() & nimcacheParam(name) & nimParams() & " " & quoteShell(pkgDir / "tests" / name & ".nim")
 
 const desktopParams =
   "-d:chronicles_line_numbers --warning:Deprecated:off --warning:UnusedImport:on -d:chronicles_log_level=TRACE"
@@ -96,7 +152,7 @@ proc macArchFlags(): string =
     "\" --passC:\"-isysroot " & sdkPath & "\" --passL:\"-isysroot " & sdkPath & "\""
 
 proc buildDesktopLib(outLibNameAndExt, `type`: string, archFlags = "") =
-  buildLibrary outLibNameAndExt, "libsds", "library/",
+  buildLibrary outLibNameAndExt, "libsds", pkgDir / "library" & "/",
     archFlags & " " & desktopParams, `type`
 
 task libsdsDynamicWindows, "Generate bindings":
@@ -117,12 +173,22 @@ task libsdsStaticLinux, "Generate bindings":
 task libsdsStaticMac, "Generate bindings":
   buildDesktopLib "libsds.a", "static", macArchFlags()
 
+proc nimLibPath(): string =
+  ## The compiler's lib/ (nimbase.h), as the compiler itself reports it, so a
+  ## symlinked or shimmed NIM still finds the right one.
+  let (dump, exitCode) = gorgeEx(nimExe().quoteShell &
+    " --hints:off --skipUserCfg --skipParentCfg --skipProjCfg dump --dump.format:json libsds.nim")
+  if exitCode != 0:
+    quit "Error: `" & nimExe() & " dump` failed: " & dump
+  parseJson(dump)["libpath"].getStr()
+
 # Build Mobile iOS
 proc buildMobileIOS(srcDir = ".", sdkPath = "") =
   echo "Building iOS libsds library"
 
-  let outDir = "build"
-  let nimcacheDir = outDir & "/nimcache"
+  let embedded = embeddedParams()
+  let outDir = outDir()
+  let nimcacheDir = nimcacheDir("ios-" & sdkPath.splitFile.name.toLowerAscii & "-" & getMyCpu())
   if dirExists nimcacheDir:
     rmDir nimcacheDir
   if not dirExists outDir:
@@ -131,7 +197,7 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
   if sdkPath.len == 0:
     quit "Error: Xcode/iOS SDK not found"
 
-  let aFile = outDir & "/libsds.a"
+  let aFile = outDir / "libsds.a"
   # nimble exits 0 on a failed task: drop the old archive so a failure can't
   # leave a stale one for consumers to pick up.
   if fileExists aFile:
@@ -141,51 +207,51 @@ proc buildMobileIOS(srcDir = ".", sdkPath = "") =
 
   # 1) Generate C sources from Nim (no linking)
   # Use unique symbol prefix to avoid conflicts with other Nim libraries
-  exec "nim c" & " --nimcache:" & nimcacheDir & " --os:ios --cpu:" & cpu &
+  exec nimExe().quoteShell & " c" & " --nimcache:" & quoteShell(nimcacheDir) & " --os:ios --cpu:" & cpu &
     " --compileOnly:on" & " --noMain --mm:refc" & " --threads:on --opt:size --header" &
-    " --nimMainPrefix:libsds" & cBindingsFlags & " --cc:clang" & " -d:useMalloc" & " -d:noSignalHandler" &
-    " " & srcDir & "/libsds.nim"
+    " --nimMainPrefix:libsds" & cBindingsFlags() & " --cc:clang" & " -d:useMalloc" & " -d:noSignalHandler" &
+    embedded & nimParams() & " " & quoteShell(srcDir / "libsds.nim")
 
   # 2) Compile all generated C files to object files with hidden visibility
   # This prevents symbol conflicts with other Nim libraries (e.g., libnim_status_client).
   # -fno-common: uninitialized globals (Nim's type info, e.g. NTIstring) would
   # otherwise be common symbols, which ld -r keeps global and the final link
   # merges with the host's own, letting this refc runtime overwrite them.
-  # nimbase.h lives in lib/, next to the resolved compiler's bin/.
-  let (nimBin, _) = gorgeEx("which nim")
-  let nimLibDir = parentDir(parentDir(nimBin.strip())) / "lib"
+  let nimLibDir = nimLibPath()
   if not fileExists(nimLibDir / "nimbase.h"):
     quit "Error: nimbase.h not found in " & nimLibDir
   let clangFlags =
-    "-arch " & clangArch & " -isysroot " & sdkPath & " -I" & nimLibDir &
+    "-arch " & clangArch & " -isysroot " & quoteShell(sdkPath) & " -I" & quoteShell(nimLibDir) &
     " -fembed-bitcode -miphoneos-version-min=16.2 -O2" & " -fvisibility=hidden -fno-common"
 
   var objectFiles: seq[string] = @[]
   for cFile in listFiles(nimcacheDir):
     if cFile.endsWith(".c"):
       let oFile = cFile.changeFileExt("o")
-      exec "clang " & clangFlags & " -c " & cFile & " -o " & oFile
+      exec "clang " & clangFlags & " -c " & quoteShell(cFile) & " -o " & quoteShell(oFile)
       objectFiles.add(oFile)
 
   # 3) Merge into one object exporting only the _Sds* API, so libsds's Nim runtime
   #    can't clash with other static Nim libs (e.g. libnim_status_client).
   #    (libtool -static ignores -exported_symbols_list on current Xcode; ld -r works.
   #    Objects go through a response file: too many long paths for one command line.)
-  let objListFile = outDir & "/objects.txt"
+  let objListFile = outDir / "objects.txt"
   writeFile(objListFile, objectFiles.join("\n"))
-  let mergedObj = outDir & "/libsds_merged.o"
-  exec "xcrun ld -r -arch " & clangArch & " -exported_symbol '_sds_*' -o " & mergedObj &
-    " -filelist " & objListFile
-  let (commons, _) = gorgeEx("nm " & mergedObj & " | grep ' C ' || true")
+  let mergedObj = outDir / "libsds_merged.o"
+  exec "xcrun ld -r -arch " & clangArch & " -exported_symbol '_sds_*' -o " & quoteShell(mergedObj) &
+    " -filelist " & quoteShell(objListFile)
+  let (commons, _) = gorgeEx("nm " & quoteShell(mergedObj) & " | grep ' C ' || true")
   if commons.strip.len > 0:
     quit "Error: libsds leaks common symbols:\n" & commons
-  exec "ar rcs " & aFile & " " & mergedObj
-  exec "rm -f " & mergedObj & " " & objListFile
+  exec "ar rcs " & quoteShell(aFile) & " " & quoteShell(mergedObj)
+  rmFile mergedObj
+  rmFile objListFile
+  copyHeader(srcDir)
 
   echo "✔ iOS library created: " & aFile
 
 task libsdsIOS, "Build the mobile bindings for iOS":
-  let srcDir = "./library"
+  let srcDir = pkgDir / "library"
   var sdkPath = getEnv("IOS_SDK_PATH")
   if sdkPath.len == 0:
     let (detected, exitCode) = gorgeEx("xcrun --show-sdk-path --sdk iphoneos")
@@ -236,13 +302,14 @@ proc buildMobileAndroid(srcDir = ".", extra_params = "") =
   let sysroot      = toolchainDir / "sysroot"
   let ndkClang     = toolchainDir / "bin" / (androidArch & androidTarget & "-clang")
 
-  let outDir = "build"
+  let embedded = embeddedParams()
+  let outDir = outDir()
   if not dirExists outDir:
     mkDir outDir
 
-  exec "nim c" &
-    " --out:" & outDir & "/libsds.so" &
-    " --threads:on --app:lib --opt:size --noMain --mm:refc --nimMainPrefix:libsds" & cBindingsFlags &
+  exec nimExe().quoteShell & " c" &
+    " --out:" & quoteShell(outDir / "libsds.so") &
+    " --threads:on --app:lib --opt:size --noMain --mm:refc --nimMainPrefix:libsds" & cBindingsFlags() &
     " -d:noSignalHandler" &
     " --cc:clang" &
     " --clang.exe:\"" & ndkClang & "\"" &
@@ -262,32 +329,36 @@ proc buildMobileAndroid(srcDir = ".", extra_params = "") =
     " -d:chronicles_sinks=textlines[dynamic]" &
     " --header" &
     " " & extra_params &
-    " " & srcDir & "/libsds.nim"
+    embedded &
+    nimcacheParam("android-" & cpu) &
+    nimParams() &
+    " " & quoteShell(srcDir / "libsds.nim")
+  copyHeader(srcDir)
 
 task libsdsAndroid, "Build the mobile bindings for Android (uses ARCH env var)":
   checkAndroidNdk()
-  let srcDir = "./library"
+  let srcDir = pkgDir / "library"
   buildMobileAndroid srcDir, "-d:chronicles_log_level=ERROR"
 
 task libsdsAndroidArm64, "Build Android arm64 bindings":
   checkAndroidNdk()
   putEnv("ARCH", "arm64")
-  buildMobileAndroid "./library", "-d:chronicles_log_level=ERROR"
+  buildMobileAndroid pkgDir / "library", "-d:chronicles_log_level=ERROR"
 
 task libsdsAndroidAmd64, "Build Android amd64 bindings":
   checkAndroidNdk()
   putEnv("ARCH", "amd64")
-  buildMobileAndroid "./library", "-d:chronicles_log_level=ERROR"
+  buildMobileAndroid pkgDir / "library", "-d:chronicles_log_level=ERROR"
 
 task libsdsAndroidX86, "Build Android x86 bindings":
   checkAndroidNdk()
   putEnv("ARCH", "i386")
-  buildMobileAndroid "./library", "-d:chronicles_log_level=ERROR"
+  buildMobileAndroid pkgDir / "library", "-d:chronicles_log_level=ERROR"
 
 task libsdsAndroidArm, "Build Android arm bindings":
   checkAndroidNdk()
   putEnv("ARCH", "arm")
-  buildMobileAndroid "./library", "-d:chronicles_log_level=ERROR"
+  buildMobileAndroid pkgDir / "library", "-d:chronicles_log_level=ERROR"
 
 task libsds, "Build the shared library for the current platform":
   when defined(macosx):
@@ -298,5 +369,15 @@ task libsds, "Build the shared library for the current platform":
     buildDesktopLib "libsds.so", "dynamic"
 
 task clean, "Remove build artifacts":
-  if dirExists "build":
-    rmDir "build"
+  if not isEmbedded():
+    if dirExists "build":
+      rmDir "build"
+  else:
+    # Only what the tasks write: LIB_OUT_DIR itself may hold other files.
+    let dir = outDir()
+    for name in ["generated", "nimcache"]:
+      rmDir dir / name
+    for name in ["libsds.h", "libsds.a", "libsds.so", "libsds.dylib", "libsds.dll", "libsds.lib"]:
+      rmFile dir / name
+    for name in testNames:
+      rmFile dir / (when defined(windows): name & ".exe" else: name)
