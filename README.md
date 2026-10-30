@@ -50,17 +50,10 @@ Enter the dev shell:
 nix develop
 ```
 
-Build using nimble tasks:
+Build for the current platform:
 ```bash
-# Dynamic library (auto-detects OS)
-nimble libsdsDynamicMac    # macOS
-nimble libsdsDynamicLinux  # Linux
-nimble libsdsDynamicWindows # Windows
-
-# Static library
-nimble libsdsStaticMac     # macOS
-nimble libsdsStaticLinux   # Linux
-nimble libsdsStaticWindows # Windows
+nimble libsds        # shared library
+nimble libsdsStatic  # static library
 ```
 
 Run tests:
@@ -88,16 +81,13 @@ export ANDROID_NDK_ROOT=$HOME/android-ndk-r27c
 export PATH=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
 ```
 
-Then build:
+Then pass the target to the build:
 ```bash
-ARCH=arm64 nimble libsdsAndroid
+CC=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang
+NIM_PARAMS="--os:android --cpu:arm64 --cc:clang --clang.exe:$CC --clang.linkerexe:$CC" nimble libsds
 ```
 
-| Architecture | Command |
-| ------------ | ------- |
-| arm64 | `ARCH=arm64 nimble libsdsAndroid` |
-| amd64 | `ARCH=amd64 nimble libsdsAndroid` |
-| x86 | `ARCH=x86 nimble libsdsAndroid` |
+The API level comes from the compiler name, and the architecture from `--cpu` and the compiler name.
 
 The library is output to `build/libsds.so`.
 
@@ -120,6 +110,27 @@ nimble lock
 
 After updating `nimble.lock`, the Nix `outputHash` in `nix/deps.nix` must be recalculated
 by running `nix build` and updating the hash from the error output.
+
+</details>
+
+<details>
+<summary>Embedding libsds in another project</summary>
+
+The caller chooses everything about the build except what the library needs itself, which is in `library/config.nims`:
+
+| Variable | Meaning |
+| -------- | ------- |
+| `NIM` | The compiler. Defaults to `nim`. |
+| `NIM_PARAMS` | Target and policy flags, plus the `--path` of every dependency. Goes last on every compile, so it wins. |
+| `LIB_OUT_DIR` | Where the library, `libsds.h`, `generated/` and nimcache go. Defaults to `build/`. |
+| `IOS_ARCH` | `libsdsIOS` only: the architecture to merge the objects for. Defaults to `arm64`. |
+
+A project that resolves dependencies itself runs the tasks with plain `nim`, so its resolution stays in charge. `nimble` in this directory would resolve `nimble.lock` instead:
+
+```bash
+printf 'include "%s/sds.nimble"\n' "$PKG" > sds.nims
+NIM_PARAMS="--skipParentCfg $(tr '\n' ' ' < nimble.paths)" nim --skipParentCfg libsds sds.nims
+```
 
 </details>
 
