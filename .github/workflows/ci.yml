@@ -83,7 +83,7 @@ jobs:
       - name: Build libsdsStatic
         run: |
           flags="-arch ${{ matrix.arch }} -isysroot $(xcrun --sdk ${{ matrix.sdk }} --show-sdk-path) ${{ matrix.min }}"
-          NIM_PARAMS="--mm:refc --opt:size --passC:\"$flags\" --passL:\"$flags\"" nimble libsdsStatic
+          NIM_PARAMS="--mm:refc --opt:size --os:ios --cpu:${{ matrix.arch }} --cc:clang --passC:\"$flags\" --passL:\"$flags\"" nimble libsdsStatic
 
       - uses: actions/upload-artifact@v4
         with:

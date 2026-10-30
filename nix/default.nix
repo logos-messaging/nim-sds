@@ -31,7 +31,7 @@ let
     };
     libsdsIOS = {
       task = "libsdsStatic";
-      params = "--passC:\"-arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path)\"";
+      params = "--os:ios --cpu:arm64 --cc:clang --passC:\"-arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path)\"";
     };
     libsdsAndroidArm64 = { task = "libsds"; params = androidParams "arm64" "aarch64-linux-android"; };
     libsdsAndroidAmd64 = { task = "libsds"; params = androidParams "amd64" "x86_64-linux-android"; };
