@@ -71,7 +71,7 @@ proc nimcacheParam(target: string): string =
 # library/libsds.h by default, or under LIB_OUT_DIR next to a copy of libsds.h.
 proc cBindingsFlags(): string =
   if not isEmbedded():
-    " -d:ffiGenBindings -d:targetLang=c -d:ffiOutputDir=generated -d:ffiSrcPath=../libsds.nim"
+    " -d:ffiGenBindings -d:targetLang=c -d:ffiOutputDir=generated"
   else:
     " -d:ffiGenBindings -d:targetLang=c -d:ffiOutputDir=" & quoteShell(outDir() / "generated")
 
