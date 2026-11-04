@@ -44,6 +44,34 @@ typedef void (*SdsRetrievalHintProvider)(const char* messageId, char** hint, siz
 // sds_create returned. Returns RET_OK or RET_ERR.
 int sds_set_retrieval_hint_provider(void* ctx, SdsRetrievalHintProvider callback, void* userData);
 
+typedef enum SdsPersistenceOperation {
+  SDS_PERSISTENCE_SAVE_CHANNEL_META = 1,
+  SDS_PERSISTENCE_UPDATE_HISTORY = 2,
+  SDS_PERSISTENCE_LOAD_CHANNEL = 3,
+  SDS_PERSISTENCE_DROP_CHANNEL = 4,
+} SdsPersistenceOperation;
+
+// Synchronous persistence callback. channelId and payload are byte buffers
+// valid only for the duration of the call; their lengths are authoritative and
+// channelId may contain embedded NUL bytes. For operations that return data,
+// allocate *response with malloc and set *responseLen; the library frees it.
+// Return RET_OK on success or RET_ERR on failure.
+typedef int (*SdsPersistenceCallback)(
+    SdsPersistenceOperation operation,
+    const unsigned char* channelId,
+    size_t channelIdLen,
+    const unsigned char* payload,
+    size_t payloadLen,
+    char** response,
+    size_t* responseLen,
+    void* userData);
+
+// Register (or clear with a NULL callback) persistence for this context.
+// After a successful sds_destroy, no persistence callback remains in use and
+// the host may release userData. If destroy returns an error, keep callback
+// state alive because teardown may not have completed.
+int sds_set_persistence_callback(void* ctx, SdsPersistenceCallback callback, void* userData);
+
 #ifdef __cplusplus
 }
 #endif
