@@ -52,8 +52,8 @@ nix develop
 
 Build for the current platform:
 ```bash
-nimble libsds        # shared library
-nimble libsdsStatic  # static library
+nim c --app:lib --out:build/libsds.dylib library/libsds.nim        # shared library (.so on Linux, .dll on Windows)
+nim c --app:staticlib --out:build/libsds.a library/libsds.nim      # static library
 ```
 
 Run tests:
@@ -84,7 +84,7 @@ export PATH=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
 Then pass the target to the build:
 ```bash
 CC=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang
-NIM_PARAMS="--os:android --cpu:arm64 --cc:clang --clang.exe:$CC --clang.linkerexe:$CC" nimble libsds
+nim c --app:lib --out:build/libsds.so --os:android --cpu:arm64 --cc:clang --clang.exe:$CC --clang.linkerexe:$CC library/libsds.nim
 ```
 
 The API level comes from the compiler name, and the architecture from `--cpu` and the compiler name.
@@ -116,20 +116,14 @@ by running `nix build` and updating the hash from the error output.
 <details>
 <summary>Embedding libsds in another project</summary>
 
-The caller chooses everything about the build except what the library needs itself, which is in `library/config.nims`:
-
-| Variable | Meaning |
-| -------- | ------- |
-| `NIM` | The compiler. Defaults to `nim`. |
-| `NIM_PARAMS` | Target and policy flags, plus the `--path` of every dependency. Goes last on every compile, so it wins. |
-| `LIB_OUT_DIR` | Where the library, `libsds.h`, `generated/` and nimcache go. Defaults to `build/`. |
-| `LIB_EXT` | `libsds` only: the extension of the shared library, for a cross build. Defaults to the host's. |
-
-A project that resolves dependencies itself runs the tasks with plain `nim`, so its resolution stays in charge. `nimble` in this directory would resolve `nimble.lock` instead:
+A project builds the library from the installed package with plain `nim c`, passing everything about the build except what the library needs itself, which is in `library/config.nims`: the target, the policy (`--mm`, `--opt`, log level), the app type, the outputs and the `--path` of every dependency from its own resolution:
 
 ```bash
-NIM_PARAMS="--skipParentCfg $(tr '\n' ' ' < nimble.paths)" nim --skipParentCfg libsds "$(nimble path sds)/libsds.nims"
+nim c --skipParentCfg --noNimblePath <target> <policy> $(tr '\n' ' ' < nimble.paths) \
+  --app:lib --nimcache:out/nimcache -o:out/libsds.so "$(nimble path sds)/library/libsds.nim"
 ```
+
+The C API is `sds_*`, declared in `library/libsds.h`, which includes `generated/sds.h`: nim-ffi writes it during the compile into `<nimcache>/generated` (or `-d:ffiOutputDir`).
 
 </details>
 

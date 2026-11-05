@@ -27,18 +27,18 @@ jobs:
         run: nimble test
 
   build:
-    name: '${{ matrix.name }} / ${{ matrix.task }}'
+    name: '${{ matrix.name }} / ${{ matrix.kind }}'
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: linux, runs-on: ubuntu-latest, task: libsds }
-          - { name: linux, runs-on: ubuntu-latest, task: libsdsStatic }
-          - { name: macos, runs-on: macos-latest, task: libsds }
-          - { name: macos, runs-on: macos-latest, task: libsdsStatic }
-          - { name: windows, runs-on: windows-latest, task: libsds }
-          - { name: windows, runs-on: windows-latest, task: libsdsStatic }
+          - { name: linux, runs-on: ubuntu-latest, kind: shared, out: libsds.so, app: lib }
+          - { name: linux, runs-on: ubuntu-latest, kind: static, out: libsds.a, app: staticlib }
+          - { name: macos, runs-on: macos-latest, kind: shared, out: libsds.dylib, app: lib }
+          - { name: macos, runs-on: macos-latest, kind: static, out: libsds.a, app: staticlib }
+          - { name: windows, runs-on: windows-latest, kind: shared, out: libsds.dll, app: lib }
+          - { name: windows, runs-on: windows-latest, kind: static, out: libsds.lib, app: staticlib }
     steps:
       - uses: actions/checkout@v4
 
@@ -46,18 +46,21 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build ${{ matrix.task }}
-        env:
-          NIM_PARAMS: --mm:refc --opt:size
-        run: nimble ${{ matrix.task }}
+      - name: Build the ${{ matrix.kind }} library
+        shell: bash
+        run: |
+          nimble shell nim c -d:ffiOutputDir=build/generated --nimcache:build/nimcache \
+            --app:${{ matrix.app }} --out:build/${{ matrix.out }} \
+            --mm:refc --opt:size library/libsds.nim
+          cp library/libsds.h build/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}-${{ matrix.task }}
+          name: ${{ matrix.name }}-${{ matrix.kind }}
           path: build/lib*
 
   # The mobile jobs build the way an application does: the target comes from the
-  # caller, and nothing about it lives in sds.nimble.
+  # caller, and nothing about it lives in the library's config.
   build-ios:
     name: 'ios / ${{ matrix.sdk }} ${{ matrix.arch }}'
     runs-on: macos-latest
@@ -80,10 +83,14 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build libsdsStatic
+      - name: Build the static library
         run: |
           flags="-arch ${{ matrix.arch }} -isysroot $(xcrun --sdk ${{ matrix.sdk }} --show-sdk-path) ${{ matrix.min }}"
-          NIM_PARAMS="--mm:refc --opt:size --os:ios --cpu:${{ matrix.arch }} --cc:clang --passC:\"$flags\" --passL:\"$flags\"" nimble libsdsStatic
+          nimble shell nim c -d:ffiOutputDir=build/generated --nimcache:build/nimcache \
+            --app:staticlib --out:build/libsds.a \
+            --mm:refc --opt:size --os:ios --cpu:${{ matrix.arch }} --cc:clang \
+            --passC:"$flags" --passL:"$flags" library/libsds.nim
+          cp library/libsds.h build/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -112,10 +119,14 @@ jobs:
         with:
           ndk-version: r27c
 
-      - name: Build libsds
+      - name: Build the shared library
         run: |
           cc="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.triple }}28-clang"
-          NIM_PARAMS="--mm:refc --opt:size --os:android --cpu:${{ matrix.cpu }} --cc:clang --clang.exe:$cc --clang.linkerexe:$cc -d:chronicles_log_level=ERROR" nimble libsds
+          nimble shell nim c -d:ffiOutputDir=build/generated --nimcache:build/nimcache \
+            --app:lib --out:build/libsds.so \
+            --mm:refc --opt:size --os:android --cpu:${{ matrix.cpu }} --cc:clang \
+            --clang.exe:$cc --clang.linkerexe:$cc -d:chronicles_log_level=ERROR library/libsds.nim
+          cp library/libsds.h build/
 
       - uses: actions/upload-artifact@v4
         with:
