@@ -22,13 +22,6 @@ requires "metrics"
 requires "results"
 requires "https://github.com/logos-messaging/nim-ffi#d98f77141de9c95c0c543d191a79aee18e7536a4"
 
-task test, "Run the test suite":
-  exec "nim c -r --outdir:build tests/test_bloom.nim"
-  exec "nim c -r --outdir:build tests/test_reliability.nim"
-  exec "nim c -r --outdir:build tests/test_persistence.nim"
-  exec "nim c -r --outdir:build tests/test_snapshot_codec.nim"
-  exec "nim c -r --outdir:build tests/test_wire_compat.nim"
-
 task clean, "Remove build artifacts":
   if dirExists "build":
     rmDir "build"

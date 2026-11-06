@@ -52,8 +52,8 @@ nix develop
 
 Build for the current platform:
 ```bash
-nim c --app:lib --out:build/libsds.dylib library/libsds.nim        # shared library (.so on Linux, .dll on Windows)
-nim c --app:staticlib --out:build/libsds.a library/libsds.nim      # static library
+nim c -d:ffiOutputDir=$PWD/build/generated --app:lib --out:build/libsds.dylib library/libsds.nim        # shared library (.so on Linux, .dll on Windows)
+nim c -d:ffiOutputDir=$PWD/build/generated --app:staticlib --out:build/libsds.a library/libsds.nim      # static library
 ```
 
 Run tests:
@@ -83,8 +83,8 @@ export PATH=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
 
 Then pass the target to the build:
 ```bash
-CC=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang
-nim c --app:lib --out:build/libsds.so --os:android --cpu:arm64 --cc:clang --clang.exe:$CC --clang.linkerexe:$CC library/libsds.nim
+CC=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang
+nim c -d:ffiOutputDir=$PWD/build/generated --app:lib --out:build/libsds.so --os:android --cpu:arm64 --cc:clang --clang.exe:$CC --clang.linkerexe:$CC library/libsds.nim
 ```
 
 The API level comes from the compiler name, and the architecture from `--cpu` and the compiler name.
@@ -120,10 +120,10 @@ A project builds the library from the installed package with plain `nim c`, pass
 
 ```bash
 nim c --skipParentCfg --noNimblePath <target> <policy> $(tr '\n' ' ' < nimble.paths) \
-  --app:lib --nimcache:out/nimcache -o:out/libsds.so "$(nimble path sds)/library/libsds.nim"
+  --app:lib --nimcache:out/nimcache -d:ffiOutputDir=$PWD/out/generated -o:out/libsds.so "$(nimble path sds)/library/libsds.nim"
 ```
 
-The C API is `sds_*`, declared in `library/libsds.h`, which includes `generated/sds.h`: nim-ffi writes it during the compile into `<nimcache>/generated` (or `-d:ffiOutputDir`).
+The C API is `sds_*`, declared in `library/libsds.h`, which includes `generated/sds.h`: nim-ffi writes it during the compile into the directory `-d:ffiOutputDir` names, which every build passes.
 
 </details>
 

@@ -18,7 +18,7 @@ let
   tools = callPackage ./tools.nix {};
 
   ndkClang = triple: "${pkgs.androidPkgs.ndk}/toolchains/llvm/prebuilt/"
-    + (if stdenv.isDarwin then "darwin" else "linux") + "-x86_64/bin/${triple}30-clang";
+    + (if stdenv.isDarwin then "darwin" else "linux") + "-x86_64/bin/${triple}28-clang";
   androidParams = cpu: triple:
     "--os:android --cpu:${cpu} --cc:clang --clang.exe:${ndkClang triple}"
     + " --clang.linkerexe:${ndkClang triple} -d:chronicles_log_level=ERROR";

@@ -49,9 +49,9 @@ jobs:
       - name: Build the ${{ matrix.kind }} library
         shell: bash
         run: |
-          nimble shell nim c -d:ffiOutputDir=build/generated --nimcache:build/nimcache \
+          nimble shell nim c -d:ffiOutputDir=${{ github.workspace }}/build/generated --nimcache:build/nimcache \
             --app:${{ matrix.app }} --out:build/${{ matrix.out }} \
-            --mm:refc --opt:size library/libsds.nim
+            --mm:orc -d:useMalloc --opt:size library/libsds.nim
           cp library/libsds.h build/
 
       - uses: actions/upload-artifact@v4
@@ -86,9 +86,9 @@ jobs:
       - name: Build the static library
         run: |
           flags="-arch ${{ matrix.arch }} -isysroot $(xcrun --sdk ${{ matrix.sdk }} --show-sdk-path) ${{ matrix.min }}"
-          nimble shell nim c -d:ffiOutputDir=build/generated --nimcache:build/nimcache \
+          nimble shell nim c -d:ffiOutputDir=${{ github.workspace }}/build/generated --nimcache:build/nimcache \
             --app:staticlib --out:build/libsds.a \
-            --mm:refc --opt:size --os:ios --cpu:${{ matrix.arch }} --cc:clang \
+            --mm:orc -d:useMalloc --opt:size --os:ios --cpu:${{ matrix.arch }} --cc:clang \
             --passC:"$flags" --passL:"$flags" library/libsds.nim
           cp library/libsds.h build/
 
@@ -122,9 +122,9 @@ jobs:
       - name: Build the shared library
         run: |
           cc="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.triple }}28-clang"
-          nimble shell nim c -d:ffiOutputDir=build/generated --nimcache:build/nimcache \
+          nimble shell nim c -d:ffiOutputDir=${{ github.workspace }}/build/generated --nimcache:build/nimcache \
             --app:lib --out:build/libsds.so \
-            --mm:refc --opt:size --os:android --cpu:${{ matrix.cpu }} --cc:clang \
+            --mm:orc -d:useMalloc --opt:size --os:android --cpu:${{ matrix.cpu }} --cc:clang \
             --clang.exe:$cc --clang.linkerexe:$cc -d:chronicles_log_level=ERROR library/libsds.nim
           cp library/libsds.h build/
 

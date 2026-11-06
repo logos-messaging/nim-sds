@@ -3,16 +3,18 @@
 # library is linked (sealing included) come from the caller.
 --noMain
 --header
+--threads:on
 switch("nimMainPrefix", "libsds")
 switch("define", "noSignalHandler")
 
 switch("define", "ffiGenBindings")
 switch("define", "targetLang=c")
 switch("define", "ffiSrcPath=../libsds.nim")
-# libsds.h includes generated/sds.h, which nim-ffi writes during the compile:
-# into the caller's nimcache unless the caller names another directory.
+# libsds.h includes generated/sds.h, which nim-ffi writes during the compile
+# into the caller's -d:ffiOutputDir. There is no default: nimcacheDir() is read
+# here before the caller's --nimcache applies.
 when not defined(ffiOutputDir):
-  switch("define", "ffiOutputDir=" & nimcacheDir() & "/generated")
+  quit "libsds: pass -d:ffiOutputDir=<absolute directory> for generated/sds.h"
 
 when defined(android):
   switch("define", "androidNDK")
