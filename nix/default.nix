@@ -80,11 +80,12 @@ in stdenv.mkDerivation {
   propagatedBuildInputs = optionals (!isAndroidBuild) [ pkgs.tinycbor ];
 
   configurePhase = ''
-    # Write nimble.paths so config.nims passes --path: flags to the Nim compiler.
+    # nimble.paths holds the --path: flags of the locked dependencies.
     cp ${nimblePaths} ./nimble.paths
   '';
 
-  # Nix supplies the compiler; config.nims reads nimble.paths.
+  # Nix supplies the compiler. Nim loads the root config.nims as a parent
+  # configuration of library/libsds.nim, and it includes nimble.paths.
   buildPhase = lib.concatMapStringsSep "\n" (target: let
     command = buildCommand target;
   in ''
