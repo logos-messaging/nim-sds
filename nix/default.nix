@@ -90,7 +90,7 @@ in stdenv.mkDerivation {
   in ''
     nim c -d:ffiOutputDir=$PWD/build/generated --nimcache:$PWD/build/nimcache \
       --app:${command.app} --out:build/${command.out} \
-      --mm:refc --opt:size ${command.params} library/libsds.nim
+      --mm:orc -d:useMalloc --opt:size ${command.params} library/libsds.nim
     cp library/libsds.h build/
   '') targets;
 
