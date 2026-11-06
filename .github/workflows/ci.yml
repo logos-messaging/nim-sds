@@ -10,11 +10,15 @@ on:
 
 jobs:
   test:
-    name: 'test / ${{ matrix.os }}'
+    name: 'test / ${{ matrix.os }} / ${{ matrix.mm }}'
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        mm: [refc, orc]
+        include:
+          - { mm: refc, flags: --mm:refc }
+          - { mm: orc, flags: --mm:orc -d:useMalloc }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +28,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run test suite
-        run: nimble test
+        run: nimble test ${{ matrix.flags }}
 
   build:
     name: '${{ matrix.name }} / ${{ matrix.kind }}'
