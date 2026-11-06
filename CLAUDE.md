@@ -149,9 +149,12 @@ nix develop --command nimble test
 The library is built with plain `nim c` on `library/libsds.nim`; `library/config.nims` holds its default configuration, and the caller picks the target, policy, app type and outputs:
 
 ```bash
-nim c --app:lib --out:build/libsds.dylib library/libsds.nim    # shared library for the current platform
-nim c --app:staticlib --out:build/libsds.a library/libsds.nim  # static library
+nimble setup
+nimble shell nim c library/libsds.nim                                       # shared library and headers in build/
+nimble shell nim c --app:staticlib --out:build/libsds.a library/libsds.nim  # static library
 ```
+
+In `nix develop`, drop `nimble shell`: Nix supplies the compiler. Callers such as status-go pass their own `--app`, `--out`, `--nimcache` and `-d:ffiOutputDir`.
 
 **Nix** (`flake.nix`) builds it for reproducible and cross-platform (including Android/iOS) outputs.
 

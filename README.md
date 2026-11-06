@@ -42,6 +42,20 @@ nix build --print-out-paths '.#libsds-android-arm'
 nix build --print-out-paths '.#libsds-ios'
 ```
 
+### Without Nix
+
+With [Nimble](https://github.com/nim-lang/nimble) 0.26 or later, for the current platform:
+
+```bash
+nimble setup
+nimble shell nim c library/libsds.nim
+```
+
+This builds the shared library into `build/`, with the headers `libsds.h` includes in
+`build/generated/`. `nimble shell` runs the Nim that `nimble.lock` pins, and the root
+`config.nims` passes it the locked dependencies. For a static library, add
+`--app:staticlib --out:build/libsds.a`.
+
 <details>
 <summary>Development shell</summary>
 
@@ -52,8 +66,8 @@ nix develop
 
 Build for the current platform:
 ```bash
-nim c -d:ffiOutputDir=$PWD/build/generated --app:lib --out:build/libsds.dylib library/libsds.nim        # shared library (.so on Linux, .dll on Windows)
-nim c -d:ffiOutputDir=$PWD/build/generated --app:staticlib --out:build/libsds.a library/libsds.nim      # static library
+nim c library/libsds.nim                                               # shared library
+nim c --app:staticlib --out:build/libsds.a library/libsds.nim          # static library
 ```
 
 Run tests:
@@ -123,7 +137,7 @@ nim c --skipParentCfg --noNimblePath <target> <policy> $(tr '\n' ' ' < nimble.pa
   --app:lib --nimcache:out/nimcache -d:ffiOutputDir=$PWD/out/generated -o:out/libsds.so "$(nimble path sds)/library/libsds.nim"
 ```
 
-The C API is `sds_*`, declared in `library/libsds.h`, which includes `generated/sds.h`: nim-ffi writes it during the compile into the directory `-d:ffiOutputDir` names, which every build passes.
+The C API is `sds_*`, declared in `library/libsds.h`, which includes `generated/sds.h`: nim-ffi writes it during the compile into the directory `-d:ffiOutputDir` names (`build/generated` in the checkout by default, so an embedder passes its own).
 
 </details>
 
