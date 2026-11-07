@@ -22,6 +22,9 @@ requires "metrics"
 requires "results"
 requires "https://github.com/logos-messaging/nim-ffi#d98f77141de9c95c0c543d191a79aee18e7536a4"
 
+task libsds, "Build the shared library and its headers into build/":
+  selfExec "c library/libsds.nim"
+
 task clean, "Remove build artifacts":
   if dirExists "build":
     rmDir "build"

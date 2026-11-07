@@ -150,7 +150,8 @@ The library is built with plain `nim c` on `library/libsds.nim`; `library/config
 
 ```bash
 nimble setup
-nimble shell nim c library/libsds.nim                                       # shared library and headers in build/
+nimble libsds                                                               # shared library and headers in build/
+nimble shell nim c library/libsds.nim                                       # the same, with flags of your own
 nimble shell nim c --app:staticlib --out:build/libsds.a library/libsds.nim  # static library
 ```
 

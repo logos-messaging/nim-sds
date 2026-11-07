@@ -48,7 +48,7 @@ With [Nimble](https://github.com/nim-lang/nimble) 0.26 or later, for the current
 
 ```bash
 nimble setup
-nimble shell nim c library/libsds.nim
+nimble libsds    # short for: nimble shell nim c library/libsds.nim
 ```
 
 This builds the shared library into `build/`, with the headers `libsds.h` includes in
