@@ -10,11 +10,15 @@ on:
 
 jobs:
   test:
-    name: 'test / ${{ matrix.os }}'
+    name: 'test / ${{ matrix.os }} / ${{ matrix.mm }}'
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        mm: [refc, orc]
+        include:
+          - { mm: refc, flags: --mm:refc }
+          - { mm: orc, flags: --mm:orc -d:useMalloc }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,21 +28,21 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run test suite
-        run: nimble test
+        run: nimble test ${{ matrix.flags }}
 
   build:
-    name: '${{ matrix.name }} / ${{ matrix.task }}'
+    name: '${{ matrix.name }} / ${{ matrix.kind }}'
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: linux, runs-on: ubuntu-latest, task: libsdsDynamicLinux }
-          - { name: linux, runs-on: ubuntu-latest, task: libsdsStaticLinux }
-          - { name: macos, runs-on: macos-latest, task: libsdsDynamicMac }
-          - { name: macos, runs-on: macos-latest, task: libsdsStaticMac }
-          - { name: windows, runs-on: windows-latest, task: libsdsDynamicWindows }
-          - { name: windows, runs-on: windows-latest, task: libsdsStaticWindows }
+          - { name: linux, runs-on: ubuntu-latest, kind: shared, out: libsds.so, app: lib }
+          - { name: linux, runs-on: ubuntu-latest, kind: static, out: libsds.a, app: staticlib }
+          - { name: macos, runs-on: macos-latest, kind: shared, out: libsds.dylib, app: lib }
+          - { name: macos, runs-on: macos-latest, kind: static, out: libsds.a, app: staticlib }
+          - { name: windows, runs-on: windows-latest, kind: shared, out: libsds.dll, app: lib }
+          - { name: windows, runs-on: windows-latest, kind: static, out: libsds.lib, app: staticlib }
     steps:
       - uses: actions/checkout@v4
 
@@ -46,45 +50,31 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build ${{ matrix.task }}
-        run: nimble ${{ matrix.task }}
+      - name: Build the ${{ matrix.kind }} library
+        shell: bash
+        run: |
+          nimble shell nim c "-d:ffiOutputDir=${{ github.workspace }}/build/generated" --nimcache:build/nimcache \
+            --app:${{ matrix.app }} --out:build/${{ matrix.out }} \
+            --mm:orc -d:useMalloc --opt:size library/libsds.nim
+          cp library/libsds.h build/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.task }}
-          path: build/
+          name: ${{ matrix.name }}-${{ matrix.kind }}
+          path: build/lib*
 
-  build-ios:
-    name: 'macos / libsdsIOS'
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: maxim-lobanov/setup-xcode@v1
-        with:
-          # 'latest-stable' tracks whatever the macos-latest runner ships, so
-          # this survives Xcode rotations (the runner dropped 16.2 for 26.x).
-          xcode-version: 'latest-stable'
-
-      - uses: ./.github/actions/nimble
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build libsdsIOS
-        run: nimble libsdsIOS
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: libsdsIOS
-          path: build/
-
+  # The Android job builds the way an application does: the target comes from the
+  # caller, and nothing about it lives in the library's config.
   build-android:
-    name: 'linux / ${{ matrix.task }}'
+    name: 'android / ${{ matrix.cpu }}'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        task: [libsdsAndroidArm64, libsdsAndroidAmd64, libsdsAndroidX86]
+        include:
+          - { cpu: arm64, triple: aarch64-linux-android }
+          - { cpu: amd64, triple: x86_64-linux-android }
+          - { cpu: i386, triple: i686-linux-android }
     steps:
       - uses: actions/checkout@v4
 
@@ -97,12 +87,16 @@ jobs:
         with:
           ndk-version: r27c
 
-      - name: Build ${{ matrix.task }}
-        env:
-          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: nimble ${{ matrix.task }}
+      - name: Build the shared library
+        run: |
+          cc="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.triple }}28-clang"
+          nimble shell nim c "-d:ffiOutputDir=${{ github.workspace }}/build/generated" --nimcache:build/nimcache \
+            --app:lib --out:build/libsds.so \
+            --mm:orc -d:useMalloc --opt:size --os:android --cpu:${{ matrix.cpu }} --cc:clang \
+            --clang.exe:$cc --clang.linkerexe:$cc -d:chronicles_log_level=ERROR library/libsds.nim
+          cp library/libsds.h build/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.task }}
-          path: build/
+          name: android-${{ matrix.cpu }}
+          path: build/lib*

@@ -11,6 +11,9 @@
 ## sensible JSON representation, so they are hand-written and dispatched to the
 ## worker thread.
 
+when not compileOption("threads"):
+  {.error: "libsds needs --threads:on".}
+
 import std/[base64, json, options]
 import ffi
 import sds

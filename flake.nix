@@ -49,7 +49,7 @@
           src = self;
         };
 
-        # All potential targets — must match nimble task names in sds.nimble.
+        # All potential targets — must match buildCommand in nix/default.nix.
         allTargets = [
           "libsds"
           "libsdsAndroidArm64"
