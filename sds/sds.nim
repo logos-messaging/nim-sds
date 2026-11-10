@@ -418,6 +418,7 @@ proc setCallbacks*(
     onPeriodicSync: PeriodicSyncCallback = nil,
     onRetrievalHint: RetrievalHintProvider = nil,
     onRepairReady: RepairReadyCallback = nil,
+    onMessageExpired: MessageExpiredCallback = nil,
 ) {.async: (raises: []).} =
   ## Sets the callback functions for various events in the ReliabilityManager.
   try:
@@ -429,6 +430,7 @@ proc setCallbacks*(
       rm.onPeriodicSync = onPeriodicSync
       rm.onRetrievalHint = onRetrievalHint
       rm.onRepairReady = onRepairReady
+      rm.onMessageExpired = onMessageExpired
     finally:
       rm.lock.release()
   except CatchableError:
@@ -465,9 +467,12 @@ proc checkUnacknowledgedMessages(
             newOutgoingBuffer.add(updatedMsg)
             dirty = true
           else:
-            if not rm.onMessageSent.isNil():
+            debug "giving up on unacknowledged message",
+              messageId = unackMsg.message.messageId, channelId,
+              attempts = unackMsg.resendAttempts
+            if not rm.onMessageExpired.isNil():
               {.cast(raises: []).}:
-                rm.onMessageSent(unackMsg.message.messageId, channelId)
+                rm.onMessageExpired(unackMsg.message.messageId, channelId)
             dirty = true # entry dropped from newOutgoingBuffer
         else:
           newOutgoingBuffer.add(unackMsg)
@@ -483,17 +488,25 @@ proc checkUnacknowledgedMessages(
       channelId = channelId, msg = getCurrentExceptionMsg()
     err(ReliabilityError.reInternalError)
 
+proc runBufferSweep*(
+    rm: ReliabilityManager
+): Future[Result[void, ReliabilityError]] {.async: (raises: []).} =
+  ## Runs one pass of the outgoing-message and bloom-filter maintenance sweep.
+  try:
+    for channelId, channel in rm.channels:
+      # Background maintenance has no caller to return to: a persistence
+      # error is logged (by reliabilityErr) and the sweep continues; the
+      # next tick retries.
+      discard await rm.checkUnacknowledgedMessages(channelId)
+      await rm.cleanBloomFilter(channelId)
+    ok()
+  except CatchableError:
+    error "Error in buffer sweep", msg = getCurrentExceptionMsg()
+    err(ReliabilityError.reInternalError)
+
 proc periodicBufferSweep(rm: ReliabilityManager) {.async: (raises: [CancelledError]).} =
   while true:
-    try:
-      for channelId, channel in rm.channels:
-        # Background maintenance has no caller to return to: a persistence
-        # error is logged (by reliabilityErr) and the sweep continues; the
-        # next tick retries.
-        discard await rm.checkUnacknowledgedMessages(channelId)
-        await rm.cleanBloomFilter(channelId)
-    except CatchableError:
-      error "Error in periodic buffer sweep", msg = getCurrentExceptionMsg()
+    discard await rm.runBufferSweep()
     await sleepAsync(chronos.milliseconds(rm.config.bufferSweepInterval.inMilliseconds))
 
 proc periodicSyncMessage(rm: ReliabilityManager) {.async: (raises: [CancelledError]).} =

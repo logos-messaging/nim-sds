@@ -26,6 +26,7 @@ type ReliabilityManager* = ref object
     ## `cleanup` can cancel them on shutdown instead of leaking them.
   onMessageReady*: proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.}
   onMessageSent*: proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.}
+  onMessageExpired*: MessageExpiredCallback
   onMissingDependencies*: proc(
     messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID
   ) {.gcsafe.}
