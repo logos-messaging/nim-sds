@@ -627,6 +627,7 @@ suite "Periodic Tasks & Buffer Management":
 
   asyncTest "periodic buffer sweep and bloom clean":
     var messageSentCount = 0
+    var expiredMessages: seq[(SdsMessageID, SdsChannelID)] = @[]
 
     var config = defaultConfig()
     config.resendInterval = initDuration(milliseconds = 100) # Short for testing
@@ -650,6 +651,10 @@ suite "Periodic Tasks & Buffer Management":
           channelId: SdsChannelID,
       ) {.gcsafe.} =
         discard,
+      onMessageExpired = proc(
+          messageId: SdsMessageID, channelId: SdsChannelID
+      ) {.gcsafe.} =
+        expiredMessages.add((messageId, channelId)),
     )
 
     # First message - should be cleaned from bloom filter later
@@ -682,7 +687,9 @@ suite "Periodic Tasks & Buffer Management":
     let finalBuffer = await rm.getOutgoingBuffer(testChannel)
     check:
       finalBuffer.len == 2
-        # Only msg2 and msg3 should be in buffer, msg1 should be removed after max retries
+        # Only msg2 and msg3 should remain after msg1 expires.
+      messageSentCount == 0
+      expiredMessages == @[(id1, testChannel)]
       finalBuffer[0].message.messageId == id2 # Verify it's the second message
       finalBuffer[0].resendAttempts == 0 # New message should have 0 attempts
       not rm.channels[testChannel].bloomFilter.contains(id1)
@@ -690,6 +697,81 @@ suite "Periodic Tasks & Buffer Management":
       rm.channels[testChannel].bloomFilter.contains(id3) # New message still in filter
 
     await rm.cleanup()
+
+  asyncTest "sweep preserves interval accounting and separates acknowledgment from expiry":
+    var sentMessages: seq[SdsMessageID] = @[]
+    var expiredMessages: seq[(SdsMessageID, SdsChannelID)] = @[]
+    rm.config.resendInterval = initDuration(seconds = 60)
+    rm.config.bufferSweepInterval = initDuration(hours = 1)
+    rm.config.maxResendAttempts = 2
+
+    await rm.setCallbacks(
+      nil,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        sentMessages.add(messageId),
+      nil,
+      onMessageExpired = proc(
+          messageId: SdsMessageID, channelId: SdsChannelID
+      ) {.gcsafe.} =
+        expiredMessages.add((messageId, channelId)),
+    )
+
+    for id in ["fresh", "due", "expired", "acknowledged"]:
+      check (await rm.wrapOutgoingMessage(@[byte(1)], id, testChannel)).isOk()
+
+    let channel = rm.channels[testChannel]
+    let past = getTime() - initDuration(seconds = 120)
+    channel.outgoingBuffer[1].sendTime = past
+    channel.outgoingBuffer[1].resendAttempts = 1
+    channel.outgoingBuffer[2].sendTime = past
+    channel.outgoingBuffer[2].resendAttempts = 2
+
+    let ack = SdsMessage.init(
+      messageId = "ack",
+      lamportTimestamp = channel.lamportTimestamp + 1,
+      causalHistory = toCausalHistory(@["acknowledged"]),
+      channelId = testChannel,
+      content = @[byte(2)],
+      bloomFilter = @[],
+    )
+    check (await rm.unwrapReceivedMessage(serializeMessage(ack).get())).isOk()
+
+    let beforeSweep = getTime()
+    rm.startPeriodicTasks()
+    await sleepAsync(chronos.milliseconds(10))
+
+    let buffer = await rm.getOutgoingBuffer(testChannel)
+    check:
+      buffer.len == 2
+      buffer[0].message.messageId == "fresh"
+      buffer[0].resendAttempts == 0
+      buffer[1].message.messageId == "due"
+      buffer[1].resendAttempts == 2
+      buffer[1].sendTime >= beforeSweep
+      sentMessages == @["acknowledged"]
+      expiredMessages == @[("expired", testChannel)]
+
+  asyncTest "expiry without a handler does not report delivery":
+    var messageSentCount = 0
+    rm.config.maxResendAttempts = 0
+    rm.config.resendInterval = initDuration(seconds = 60)
+    rm.config.bufferSweepInterval = initDuration(hours = 1)
+    await rm.setCallbacks(
+      nil,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        messageSentCount += 1,
+      nil,
+    )
+    check (await rm.wrapOutgoingMessage(@[byte(1)], "expired", testChannel)).isOk()
+    rm.channels[testChannel].outgoingBuffer[0].sendTime =
+      getTime() - initDuration(seconds = 120)
+
+    rm.startPeriodicTasks()
+    await sleepAsync(chronos.milliseconds(10))
+
+    check:
+      (await rm.getOutgoingBuffer(testChannel)).len == 0
+      messageSentCount == 0
 
   asyncTest "periodic sync callback":
     var syncCallCount = 0

@@ -9,6 +9,9 @@ type
   MessageSentCallback* =
     proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.}
 
+  MessageExpiredCallback* =
+    proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.}
+
   MissingDependenciesCallback* = proc(
     messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID
   ) {.gcsafe.}

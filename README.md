@@ -2,6 +2,19 @@
 
 Nim implementation of the e2e reliability protocol.
 
+## Outgoing message events
+
+`onMessageSent` (`message_sent` in the C FFI) reports acknowledgment evidence
+from an incoming message's causal history or bloom filter. Unacknowledged
+messages removed after the configured sweep budget instead trigger the optional
+`onMessageExpired` callback (`message_expired`), with `messageId` and `channelId`.
+Expiry is not delivery confirmation.
+
+The existing sweep timing and accounting are unchanged: after `resendInterval`,
+the sweep increments `resendAttempts` and resets `sendTime`, or expires the
+message if `maxResendAttempts` has been reached. The sweep does not transmit
+retries; these counters currently measure elapsed intervals, not transmissions.
+
 ## Prerequisites
 
 - [Nix](https://nixos.org/download/) package manager
