@@ -30,6 +30,7 @@ extern "C" {
 // Each payload is JSON tagged by eventType:
 //   message_ready         {"eventType":"message_ready","messageId":"0xdeadbeef","channelId":"my-chat"}
 //   message_sent          {"eventType":"message_sent","messageId":"0xdeadbeef","channelId":"my-chat"}
+//   message_expired       {"eventType":"message_expired","messageId":"0xdeadbeef","channelId":"my-chat"}
 //   missing_dependencies  {"eventType":"missing_dependencies","messageId":"0xdeadbeef","channelId":"my-chat",
 //                          "missingDeps":[{"messageId":"0xaaa","retrievalHint":"aGludA=="}]}
 //   periodic_sync         {"eventType":"periodic_sync"}

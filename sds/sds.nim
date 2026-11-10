@@ -418,6 +418,7 @@ proc setCallbacks*(
     onPeriodicSync: PeriodicSyncCallback = nil,
     onRetrievalHint: RetrievalHintProvider = nil,
     onRepairReady: RepairReadyCallback = nil,
+    onMessageExpired: MessageExpiredCallback = nil,
 ) {.async: (raises: []).} =
   ## Sets the callback functions for various events in the ReliabilityManager.
   try:
@@ -429,6 +430,7 @@ proc setCallbacks*(
       rm.onPeriodicSync = onPeriodicSync
       rm.onRetrievalHint = onRetrievalHint
       rm.onRepairReady = onRepairReady
+      rm.onMessageExpired = onMessageExpired
     finally:
       rm.lock.release()
   except CatchableError:
@@ -465,9 +467,9 @@ proc checkUnacknowledgedMessages(
             newOutgoingBuffer.add(updatedMsg)
             dirty = true
           else:
-            if not rm.onMessageSent.isNil():
+            if not rm.onMessageExpired.isNil():
               {.cast(raises: []).}:
-                rm.onMessageSent(unackMsg.message.messageId, channelId)
+                rm.onMessageExpired(unackMsg.message.messageId, channelId)
             dirty = true # entry dropped from newOutgoingBuffer
         else:
           newOutgoingBuffer.add(unackMsg)
