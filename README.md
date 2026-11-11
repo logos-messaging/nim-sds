@@ -15,6 +15,19 @@ the sweep increments `resendAttempts` and resets `sendTime`, or expires the
 message if `maxResendAttempts` has been reached. The sweep does not transmit
 retries; these counters currently measure elapsed intervals, not transmissions.
 
+## Periodic sync messages
+
+`wrapSyncMessage(channelId)` builds an empty-content SDS sync message containing
+the channel's current Lamport timestamp, causal history, bloom filter, and any
+eligible repair requests. The sync has a reusable protocol-reserved message ID;
+callers only need to provide its channel.
+
+Sync messages process peer acknowledgements and missing-content dependencies
+when received, but the sync itself is never added to the outgoing acknowledgement
+buffer, bloom filter, incoming buffer, or persisted message history. The C FFI
+exposes the same operation as `sds_wrap_sync_message`; its unwrap response
+includes an `isSync` flag so callers can distinguish sync metadata from content.
+
 ## Prerequisites
 
 - [Nix](https://nixos.org/download/) package manager

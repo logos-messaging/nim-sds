@@ -36,6 +36,11 @@ extern "C" {
 //   periodic_sync         {"eventType":"periodic_sync"}
 //   repair_ready          {"eventType":"repair_ready","message":[10,4,116,101,115,116],"channelId":"my-chat"}
 
+// sds_wrap_sync_message(ctx, request) creates an empty-content SDS sync for the
+// requested channel. Sync messages are never added to causal history, bloom
+// filters, or the outgoing acknowledgement buffer.
+// The unwrap response includes "isSync": true for received sync messages.
+
 // Synchronous provider invoked by SDS-R to fetch a retrieval hint for a
 // message id. The implementation allocates `*hint` with malloc (and sets
 // `*hintLen`); the library takes ownership and frees it with free().
