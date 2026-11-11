@@ -51,11 +51,12 @@ suite "Core Operations":
 
     let unwrapResult = await rm.unwrapReceivedMessage(wrapped)
     check unwrapResult.isOk()
-    let (unwrapped, missingDeps, channelId) = unwrapResult.get()
+    let (unwrapped, missingDeps, channelId, isSync) = unwrapResult.get()
     check:
       unwrapped == msg
       missingDeps.len == 0
       channelId == testChannel
+      not isSync
 
   asyncTest "basic message wrapping and unwrapping (non-empty bloom)":
     rm.seedBloom(testChannel, 50)
@@ -76,11 +77,137 @@ suite "Core Operations":
 
     let unwrapResult = await rm.unwrapReceivedMessage(wrapped)
     check unwrapResult.isOk()
-    let (unwrapped, missingDeps, channelId) = unwrapResult.get()
+    let (unwrapped, missingDeps, channelId, isSync) = unwrapResult.get()
     check:
       unwrapped == msg
       missingDeps.len == 0
       channelId == testChannel
+      not isSync
+
+  asyncTest "sync wrapping includes channel metadata without adding content state":
+    let content = await rm.wrapOutgoingMessage(@[byte(1), 2], "content-1", testChannel)
+    check content.isOk()
+    let contentMessage = deserializeMessage(content.get()).get()
+    let channel = rm.channels[testChannel]
+
+    let historyBefore = channel.messageHistory.len
+    let outgoingBefore = channel.outgoingBuffer.len
+    let bloomBefore = channel.bloomFilter.contains("content-1")
+
+    let syncResult = await rm.wrapSyncMessage(testChannel)
+    check syncResult.isOk()
+    let sync = deserializeMessage(syncResult.get()).get()
+
+    check:
+      sync.messageId == "sds-periodic-sync"
+      sync.channelId == testChannel
+      sync.content.len == 0
+      sync.lamportTimestamp > 1_000_000_000_000'i64
+      sync.lamportTimestamp > contentMessage.lamportTimestamp
+      sync.causalHistory.len == 1
+      sync.causalHistory[0].messageId == "content-1"
+      sync.bloomFilter.len > 0
+      channel.messageHistory.len == historyBefore
+      channel.outgoingBuffer.len == outgoingBefore
+      bloomBefore
+      not channel.bloomFilter.contains(sync.messageId)
+      sync.messageId notin channel.messageHistory
+
+  asyncTest "sync receive processes acknowledgements without persisting the sync":
+    var sentIDs: seq[SdsMessageID]
+    var readyIDs: seq[SdsMessageID]
+    await rm.setCallbacks(
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        readyIDs.add(messageId),
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        sentIDs.add(messageId),
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
+        discard,
+    )
+
+    let content = await rm.wrapOutgoingMessage(@[byte(1)], "content-to-ack", testChannel)
+    check content.isOk()
+
+    let peer = newReliabilityManager(participantId = "bob").get()
+    check (await peer.ensureChannel(testChannel)).isOk()
+    check (await peer.unwrapReceivedMessage(content.get())).isOk()
+
+    let sync = await peer.wrapSyncMessage(testChannel)
+    check sync.isOk()
+    let syncMessage = deserializeMessage(sync.get()).get()
+
+    let historyBefore = rm.channels[testChannel].messageHistory.len
+    let received = await rm.unwrapReceivedMessage(sync.get())
+    check received.isOk()
+    let (payload, missingDeps, channelId, isSync) = received.get()
+
+    check:
+      isSync
+      payload.len == 0
+      missingDeps.len == 0
+      channelId == testChannel
+      sentIDs == @["content-to-ack"]
+      readyIDs.len == 0
+      rm.channels[testChannel].outgoingBuffer.len == 0
+      rm.channels[testChannel].messageHistory.len == historyBefore
+      syncMessage.messageId notin rm.channels[testChannel].messageHistory
+      not rm.channels[testChannel].bloomFilter.contains(syncMessage.messageId)
+      syncMessage.messageId notin rm.channels[testChannel].incomingBuffer
+
+    # The same non-unique sync ID must still process fresh metadata later.
+    let secondContent =
+      await rm.wrapOutgoingMessage(@[byte(2)], "second-content-to-ack", testChannel)
+    check secondContent.isOk()
+    check (await peer.unwrapReceivedMessage(secondContent.get())).isOk()
+    let secondSync = await peer.wrapSyncMessage(testChannel)
+    check secondSync.isOk()
+    check deserializeMessage(secondSync.get()).get().messageId == syncMessage.messageId
+    check (await rm.unwrapReceivedMessage(secondSync.get())).isOk()
+    check sentIDs == @["content-to-ack", "second-content-to-ack"]
+
+    await peer.cleanup()
+
+  asyncTest "sync with missing content dependencies is reported but not buffered":
+    var missingDepsCount = 0
+    await rm.setCallbacks(
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        discard,
+      proc(
+          messageId: SdsMessageID,
+          missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID,
+      ) {.gcsafe.} =
+        missingDepsCount += 1,
+    )
+
+    let sync = SdsMessage.init(
+      messageId = "sds-periodic-sync",
+      lamportTimestamp = 42,
+      causalHistory = @[HistoryEntry(messageId: "missing-content")],
+      channelId = testChannel,
+      content = @[],
+      bloomFilter = @[],
+    )
+    let result = await rm.unwrapReceivedMessage(serializeMessage(sync).get())
+    check result.isOk()
+    let (_, missingDeps, _, isSync) = result.get()
+    let channel = rm.channels[testChannel]
+
+    check:
+      isSync
+      missingDeps.len == 1
+      missingDeps[0].messageId == "missing-content"
+      missingDepsCount == 1
+      "missing-content" in channel.outgoingRepairBuffer
+      "sds-periodic-sync" notin channel.incomingBuffer
+      "sds-periodic-sync" notin channel.messageHistory
+      not channel.bloomFilter.contains("sds-periodic-sync")
 
   asyncTest "message ordering":
     # Create messages with different timestamps
@@ -181,7 +308,7 @@ suite "Reliability Mechanisms":
     # First try processing msg3 (which depends on msg2 which depends on msg1)
     let unwrapResult3 = await rm.unwrapReceivedMessage(serialized3.get())
     check unwrapResult3.isOk()
-    let (_, missingDeps3, _) = unwrapResult3.get()
+    let (_, missingDeps3, _, _) = unwrapResult3.get()
 
     check:
       missingDepsCount == 1 # Should trigger missing deps callback
@@ -192,7 +319,7 @@ suite "Reliability Mechanisms":
     # Then try processing msg2 (which only depends on msg1)
     let unwrapResult2 = await rm.unwrapReceivedMessage(serialized2.get())
     check unwrapResult2.isOk()
-    let (_, missingDeps2, _) = unwrapResult2.get()
+    let (_, missingDeps2, _, _) = unwrapResult2.get()
 
     check:
       missingDepsCount == 2 # Should have triggered another missing deps callback
@@ -253,7 +380,7 @@ suite "Reliability Mechanisms":
 
     let unwrapResult = await rm.unwrapReceivedMessage(serialized2.get())
     check unwrapResult.isOk()
-    let (_, missingDeps, _) = unwrapResult.get()
+    let (_, missingDeps, _, _) = unwrapResult.get()
 
     check:
       missingDepsCount == 1
@@ -538,7 +665,7 @@ suite "Reliability Mechanisms":
     let serialized3 = serializeMessage(msg3).get()
     let unwrapResult3 = await rm.unwrapReceivedMessage(serialized3)
     check unwrapResult3.isOk()
-    let (_, missingDeps3, _) = unwrapResult3.get()
+    let (_, missingDeps3, _, _) = unwrapResult3.get()
     check missingDeps3.len == 1
     check missingDeps3[0].messageId == "missing-dep"
     # The hint is empty because it was not provided by the remote sender
@@ -557,7 +684,7 @@ suite "Reliability Mechanisms":
     let serialized4 = serializeMessage(msg4).get()
     let unwrapResult4 = await rm.unwrapReceivedMessage(serialized4)
     check unwrapResult4.isOk()
-    let (_, missingDeps4, _) = unwrapResult4.get()
+    let (_, missingDeps4, _, _) = unwrapResult4.get()
     check missingDeps4.len == 1
     check missingDeps4[0].messageId == "another-missing"
     # The hint should be preserved from the remote sender
@@ -963,7 +1090,7 @@ suite "Multi-Channel ReliabilityManager Tests":
     # Unwrap messages - should extract channel ID and route correctly
     let unwrap1 = await rm.unwrapReceivedMessage(wrapped1.get())
     check unwrap1.isOk()
-    let (content1, deps1, extractedChannel1) = unwrap1.get()
+    let (content1, deps1, extractedChannel1, _) = unwrap1.get()
     check:
       content1 == msg1
       deps1.len == 0
@@ -971,7 +1098,7 @@ suite "Multi-Channel ReliabilityManager Tests":
 
     let unwrap2 = await rm.unwrapReceivedMessage(wrapped2.get())
     check unwrap2.isOk()
-    let (content2, deps2, extractedChannel2) = unwrap2.get()
+    let (content2, deps2, extractedChannel2, _) = unwrap2.get()
     check:
       content2 == msg2
       deps2.len == 0
@@ -1304,6 +1431,29 @@ suite "SDS-R: Repair Buffer Management":
       unwrapped.repairRequest[0].messageId == "missing-msg"
       # Should be removed from buffer after attaching
       "missing-msg" notin channel.outgoingRepairBuffer
+
+  asyncTest "sync messages carry repair requests without entering content state":
+    let channel = rm.channels[testChannel]
+    channel.outgoingRepairBuffer["missing-msg"] = OutgoingRepairEntry(
+      outHistEntry: HistoryEntry(messageId: "missing-msg", senderId: "orig-sender"),
+      minTimeRepairReq: getTime() - initDuration(seconds = 10),
+    )
+    let historyBefore = channel.messageHistory.len
+    let outgoingBefore = channel.outgoingBuffer.len
+
+    let wrapped = await rm.wrapSyncMessage(testChannel)
+    check wrapped.isOk()
+    let sync = deserializeMessage(wrapped.get()).get()
+
+    check:
+      sync.content.len == 0
+      sync.repairRequest.len == 1
+      sync.repairRequest[0].messageId == "missing-msg"
+      "missing-msg" notin channel.outgoingRepairBuffer
+      channel.messageHistory.len == historyBefore
+      channel.outgoingBuffer.len == outgoingBefore
+      "sds-periodic-sync" notin channel.messageHistory
+      not channel.bloomFilter.contains(sync.messageId)
 
   asyncTest "expired repair requests attach the most-overdue first when capped":
     # Per spec (sds-r-send-message, RECOMMENDED): when more entries are

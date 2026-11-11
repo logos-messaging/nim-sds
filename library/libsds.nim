@@ -80,6 +80,9 @@ type SdsWrapRequest* {.ffi.} = object
   messageId: string
   channelId: string
 
+type SdsSyncRequest* {.ffi.} = object
+  channelId: string
+
 type SdsWrapResponse* {.ffi.} = object
   message: seq[byte]
 
@@ -309,13 +312,21 @@ proc sdsWrapOutgoingMessage*(
     return err("error processing wrap request: " & $error)
   return ok(SdsWrapResponse(message: wrapped))
 
+proc sdsWrapSyncMessage*(
+    rm: ReliabilityManager, req: SdsSyncRequest
+): Future[Result[SdsWrapResponse, string]] {.ffi.} =
+  let wrapped = (await wrapSyncMessage(rm, req.channelId)).valueOr:
+    error "WRAP_SYNC_MESSAGE failed", error = error
+    return err("error processing sync wrap request: " & $error)
+  return ok(SdsWrapResponse(message: wrapped))
+
 proc sdsUnwrapReceivedMessage*(
     rm: ReliabilityManager, req: SdsUnwrapRequest
 ): Future[Result[string, string]] {.ffi.} =
   # The response carries nested objects (missingDeps) which the framework's
   # object serializer cannot emit, so the JSON is built by hand and returned as
   # a string. Shape matches the legacy unwrap response.
-  let (unwrapped, missingDeps, channelId) = (
+  let (unwrapped, missingDeps, channelId, isSync) = (
     await unwrapReceivedMessage(rm, req.message)
   ).valueOr:
     return err("error processing unwrap request: " & $error)
@@ -323,6 +334,7 @@ proc sdsUnwrapReceivedMessage*(
   var node = newJObject()
   node["message"] = %*unwrapped
   node["channelId"] = %*channelId
+  node["isSync"] = %*isSync
   var missingDepsNode = newJArray()
   for dep in missingDeps:
     var depNode = newJObject()

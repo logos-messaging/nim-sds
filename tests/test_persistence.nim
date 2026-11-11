@@ -48,8 +48,8 @@ suite "Persistence: write → restart → read-back":
     # updateLamportTimestamp is now pure; the mutation is persisted by the
     # next op-end save. Drive a wrap to force a trySaveMeta.
     discard await rm1.wrapOutgoingMessage(@[byte(1)], "tick", testChannel)
-    # max(42,0)+1 then max(getTime().toUnix, 43)+1; whatever wrap sets is
-    # what we'll see. We just assert it stayed monotonic.
+    # max(42,0)+1 then max(current epoch milliseconds, 43)+1; whatever wrap
+    # sets is what we'll see. We just assert it stayed monotonic.
     check store.lamports[testChannel] >= 43
     let savedLamport = store.lamports[testChannel]
     await rm1.cleanup()
