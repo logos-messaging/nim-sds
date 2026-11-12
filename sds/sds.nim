@@ -149,6 +149,7 @@ proc wrapMessage(
         )).isOkOr:
           return err(error)
 
+        let summaryVersion = channel.syncSummaryVersion
         let bfResult = serializeBloomFilter(channel.bloomFilter.filter)
         if bfResult.isErr():
           error "Failed to serialize bloom filter", channelId = channelId
@@ -228,7 +229,12 @@ proc wrapMessage(
             channel.repairRequestAttempts[key] = now
           else:
             channel.repairRequestAttempts.del(key)
-        channel.syncSummaryPending = false
+        # A normal outgoing message carries its own history entry as content,
+        # so its single local history append is covered by this publication.
+        let includedSummaryVersion =
+          summaryVersion + (if isSync: 0'u64 else: 1'u64)
+        if channel.syncSummaryVersion == includedSummaryVersion:
+          channel.syncSummaryPending = false
         channel.lastSyncActivity = now
         channel.lastSyncSent = now
         if isSync:
@@ -382,7 +388,7 @@ proc unwrapReceivedMessage*(
 
     if not isSync:
       channel.bloomFilter.add(msg.messageId)
-      channel.syncSummaryPending = true
+      channel.markSyncSummaryChanged()
 
     (await rm.updateLamportTimestamp(msg.lamportTimestamp, channelId)).isOkOr:
       return err(error)
@@ -516,7 +522,7 @@ proc markDependenciesMet*(
     for msgId in messageIds:
       if not channel.bloomFilter.contains(msgId):
         channel.bloomFilter.add(msgId)
-        channel.syncSummaryPending = true
+        channel.markSyncSummaryChanged()
 
       # Phase 2B: in-memory dep-set shrink + repair-buffer dels only; the
       # op-end trySaveMeta below covers all mutations atomically.
