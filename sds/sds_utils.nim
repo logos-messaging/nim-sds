@@ -325,7 +325,10 @@ proc getRecentHistoryEntries*(
       var entries: seq[HistoryEntry] = @[]
       for msgId in recentMessageIds:
         var entry = HistoryEntry(messageId: msgId)
-        if not rm.onRetrievalHint.isNil():
+        if not rm.onChannelRetrievalHint.isNil():
+          {.cast(raises: []).}:
+            entry.retrievalHint = rm.onChannelRetrievalHint(msgId, channelId)
+        elif not rm.onRetrievalHint.isNil():
           {.cast(raises: []).}:
             entry.retrievalHint = rm.onRetrievalHint(msgId)
         entry.senderId = channel.messageHistory[msgId].senderId

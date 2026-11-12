@@ -17,16 +17,25 @@ retries; these counters currently measure elapsed intervals, not transmissions.
 
 ## Periodic sync messages
 
-`wrapSyncMessage(channelId)` builds an empty-content SDS sync message containing
-the channel's current Lamport timestamp, causal history, bloom filter, and any
-eligible repair requests. The sync has a reusable protocol-reserved message ID;
-callers only need to provide its channel.
+Call `tick()` regularly to obtain due payloads for loaded channels. Each event
+contains a channel ID and either a serialized payload to publish or an error.
+SDS decides when a channel is due based on activity, the configured interval,
+pending repair requests, and randomized backoff. Tick does not transmit messages.
+Call `ensureChannel` for channels to monitor, including after restart; persistence
+loads channels on demand and does not enumerate them. Scheduling state is in
+memory and starts afresh when a channel is loaded.
 
-Sync messages process peer acknowledgements and missing-content dependencies
-when received, but the sync itself is never added to the outgoing acknowledgement
-buffer, bloom filter, incoming buffer, or persisted message history. The C FFI
-exposes the same operation as `sds_wrap_sync_message`; its unwrap response
-includes an `isSync` flag so callers can distinguish sync metadata from content.
+Syncs carry the channel's causal history, bloom filter and due repair requests.
+Use the channel-aware retrieval hint provider when hints depend on channel.
+Due repair requests included in syncs remain pending for a later sync, so a
+failed publication does not discard them.
+Their metadata processes acknowledgements and missing content on receipt, but
+syncs never enter content history, bloom or acknowledgement buffers. An unwrap
+result with no application payload (`none` in Nim, `message: null` in C JSON)
+means metadata was consumed successfully; errors are returned separately.
+Existing expiry and repair maintenance remains independent of `tick()`.
+Generated payloads are not queued for retransmission if publication fails; a
+later due sync contains a fresh summary.
 
 ## Prerequisites
 

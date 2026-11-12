@@ -22,6 +22,28 @@ proc newV2Manager(
     .get()
 
 suite "Persistence: write → restart → read-back":
+  asyncTest "tick monitors a restored channel after it is ensured":
+    let store = newInMemoryStore()
+    let first = newV2Manager(store)
+    check (await first.wrapOutgoingMessage(@[1.byte], "persisted", testChannel)).isOk()
+    await first.cleanup()
+
+    let second = newV2Manager(store)
+    check (await second.tick()).len == 0
+    check (await second.ensureChannel(testChannel)).isOk()
+    check (await second.tick()).len == 0
+    second.channels[testChannel].lastSyncActivity =
+      getTime() - second.config.syncMessageInterval - initDuration(seconds = 1)
+    second.channels[testChannel].syncJitterInitialized = true
+    second.channels[testChannel].syncJitter = initDuration()
+    let events = await second.tick()
+    check events.len == 1
+    let history = deserializeMessage(events[0].payload).get().causalHistory
+    check:
+      history.len == 1
+      history[0].messageId == "persisted"
+    await second.cleanup()
+
   asyncTest "outgoing buffer survives restart":
     let store = newInMemoryStore()
     let rm1 = newV2Manager(store)

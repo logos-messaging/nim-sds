@@ -1,4 +1,4 @@
-import std/[sets, tables]
+import std/[sets, tables, times]
 import ./sds_message_id
 import ./sds_message
 import ./rolling_bloom_filter
@@ -11,6 +11,10 @@ export
 
 type ChannelContext* = ref object
   lamportTimestamp*: int64
+  lastSyncActivity*: Time
+  lastSyncSent*: Time
+  syncJitter*: Duration
+  syncJitterInitialized*: bool
   messageHistory*: OrderedTable[SdsMessageID, SdsMessage]
     ## Single source of truth for delivered messages. Holds the deserialized
     ## SdsMessage (which carries senderId, lamportTimestamp, content, etc.) so
@@ -52,6 +56,8 @@ type ChannelContext* = ref object
 proc new*(T: type ChannelContext, bloomFilter: RollingBloomFilter): T =
   return T(
     lamportTimestamp: 0,
+    lastSyncActivity: getTime(),
+    lastSyncSent: getTime(),
     messageHistory: initOrderedTable[SdsMessageID, SdsMessage](),
     bloomFilter: bloomFilter,
     outgoingBuffer: @[],
