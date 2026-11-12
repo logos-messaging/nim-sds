@@ -15,6 +15,8 @@ type ChannelContext* = ref object
   lastSyncSent*: Time
   syncJitter*: Duration
   syncJitterInitialized*: bool
+  syncSummaryPending*: bool
+  repairRequestAttempts*: Table[SdsMessageID, Time]
   messageHistory*: OrderedTable[SdsMessageID, SdsMessage]
     ## Single source of truth for delivered messages. Holds the deserialized
     ## SdsMessage (which carries senderId, lamportTimestamp, content, etc.) so
@@ -58,6 +60,7 @@ proc new*(T: type ChannelContext, bloomFilter: RollingBloomFilter): T =
     lamportTimestamp: 0,
     lastSyncActivity: getTime(),
     lastSyncSent: getTime(),
+    repairRequestAttempts: initTable[SdsMessageID, Time](),
     messageHistory: initOrderedTable[SdsMessageID, SdsMessage](),
     bloomFilter: bloomFilter,
     outgoingBuffer: @[],
