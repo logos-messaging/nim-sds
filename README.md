@@ -21,19 +21,25 @@ Call `tick()` regularly to obtain due payloads for loaded channels. Each event
 contains a channel ID and either a serialized payload to publish or an error.
 SDS decides when a channel is due based on activity, the configured interval,
 pending repair requests, and randomized backoff. Tick does not transmit messages.
+Pending acknowledgement-summary payloads are generated within the sync interval
+plus jitter (on the next tick), even while incoming traffic keeps the channel busy.
 Call `ensureChannel` for channels to monitor, including after restart; persistence
 loads channels on demand and does not enumerate them. Scheduling state is in
 memory and starts afresh when a channel is loaded.
+Channel IDs must be nonempty.
 
 Syncs carry the channel's causal history, bloom filter and due repair requests.
 Use the channel-aware retrieval hint provider when hints depend on channel.
 Due repair requests included in syncs remain pending for a later sync, so a
 failed publication does not discard them.
+Selection rotates between requests without extending their expiry deadlines.
 Their metadata processes acknowledgements and missing content on receipt, but
 syncs never enter content history, bloom or acknowledgement buffers. An unwrap
 result with no application payload (`none` in Nim, `message: null` in C JSON)
 means metadata was consumed successfully; errors are returned separately.
 Existing expiry and repair maintenance remains independent of `tick()`.
+Self-originated syncs are ignored when the participant ID is nonempty, and
+repeated repair requests cannot postpone an already scheduled response.
 Generated payloads are not queued for retransmission if publication fails; a
 later due sync contains a fresh summary.
 

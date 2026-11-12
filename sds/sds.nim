@@ -138,7 +138,9 @@ proc wrapMessage(
               dueRepair = true
               break
           if now < channel.lastSyncActivity + interval + channel.syncJitter and
-              not (dueRepair and now >= channel.lastSyncSent + interval):
+              not (dueRepair and now >= channel.lastSyncSent + interval) and
+              not (channel.syncSummaryPending and
+                now >= channel.lastSyncSent + interval + channel.syncJitter):
             return ok(newSeq[byte]())
           jitter = randomSyncJitter(interval).valueOr:
             return err(error)
@@ -152,18 +154,29 @@ proc wrapMessage(
           error "Failed to serialize bloom filter", channelId = channelId
           return err(ReliabilityError.reSerializationError)
 
-        # SDS-R: collect eligible expired repair requests to attach. Per
-        # spec (sds-r-send-message, RECOMMENDED), prioritise the entries with
-        # the smallest minTimeRepairReq — they are the most overdue and the
-        # ones the network most needs us to ask about.
+        # Try unsent requests first, then least-recently attempted requests.
+        # Keep retry priority separate from the original expiry deadline.
         var repairReqs: seq[HistoryEntry] = @[]
         var expiredKeys: seq[SdsMessageID] = @[]
         var eligible: seq[(SdsMessageID, OutgoingRepairEntry)] = @[]
+        var staleAttempts: seq[SdsMessageID]
+        for msgId in channel.repairRequestAttempts.keys:
+          if msgId notin channel.outgoingRepairBuffer:
+            staleAttempts.add(msgId)
+        for msgId in staleAttempts:
+          channel.repairRequestAttempts.del(msgId)
         for msgId, repairEntry in channel.outgoingRepairBuffer:
           if now >= repairEntry.minTimeRepairReq:
             eligible.add((msgId, repairEntry))
         eligible.sort do(a, b: (SdsMessageID, OutgoingRepairEntry)) -> int:
-          cmp(a[1].minTimeRepairReq, b[1].minTimeRepairReq)
+          let attemptOrder = cmp(
+            channel.repairRequestAttempts.getOrDefault(a[0]),
+            channel.repairRequestAttempts.getOrDefault(b[0]),
+          )
+          if attemptOrder != 0:
+            attemptOrder
+          else:
+            cmp(a[1].minTimeRepairReq, b[1].minTimeRepairReq)
         let take = min(eligible.len, rm.config.maxRepairRequests)
         for i in 0 ..< take:
           repairReqs.add(eligible[i][1].outHistEntry)
@@ -210,6 +223,12 @@ proc wrapMessage(
 
         let serialized = serializeMessage(msg).valueOr:
           return err(error)
+        for key in expiredKeys:
+          if isSync:
+            channel.repairRequestAttempts[key] = now
+          else:
+            channel.repairRequestAttempts.del(key)
+        channel.syncSummaryPending = false
         channel.lastSyncActivity = now
         channel.lastSyncSent = now
         if isSync:
@@ -338,10 +357,13 @@ proc unwrapReceivedMessage*(
     let msg = deserializeMessage(message).valueOr:
       return err(ReliabilityError.reDeserializationError)
 
+    let isSync = msg.content.len == 0
+    if isSync and rm.participantId.len > 0 and msg.senderId == rm.participantId:
+      return ok((none(seq[byte]), newSeq[HistoryEntry](), channelId))
+
     let channel = (await rm.getOrCreateChannel(channelId)).valueOr:
       return err(error)
     channel.lastSyncActivity = getTime()
-    let isSync = msg.content.len == 0
 
     # SDS-R: opportunistic repair-buffer cleanup — applies to duplicates too,
     # so rebroadcasts cancel redundant responses on peers that already have the message.
@@ -360,6 +382,7 @@ proc unwrapReceivedMessage*(
 
     if not isSync:
       channel.bloomFilter.add(msg.messageId)
+      channel.syncSummaryPending = true
 
     (await rm.updateLamportTimestamp(msg.lamportTimestamp, channelId)).isOkOr:
       return err(error)
@@ -394,7 +417,10 @@ proc unwrapReceivedMessage*(
               minTimeRepairResp: now + tResp,
             )
             # Phase 2B: in-memory insert only; op-end trySaveMeta covers it.
-            channel.incomingRepairBuffer[repairEntry.messageId] = inEntry
+            if repairEntry.messageId notin channel.incomingRepairBuffer or
+                inEntry.minTimeRepairResp <
+                  channel.incomingRepairBuffer[repairEntry.messageId].minTimeRepairResp:
+              channel.incomingRepairBuffer[repairEntry.messageId] = inEntry
 
     var missingDeps = rm.checkDependencies(msg.causalHistory, channelId)
 
@@ -490,6 +516,7 @@ proc markDependenciesMet*(
     for msgId in messageIds:
       if not channel.bloomFilter.contains(msgId):
         channel.bloomFilter.add(msgId)
+        channel.syncSummaryPending = true
 
       # Phase 2B: in-memory dep-set shrink + repair-buffer dels only; the
       # op-end trySaveMeta below covers all mutations atomically.

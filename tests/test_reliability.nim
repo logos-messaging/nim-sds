@@ -1,4 +1,4 @@
-import results, std/[base64, json, times, options, tables]
+import results, std/[base64, json, times, options, tables, sets]
 import sds
 import ./async_unittest
 import ../library/json_responses
@@ -53,6 +53,17 @@ suite "Core Operations":
       config.bloomFilterCapacity == DefaultBloomFilterCapacity
       config.bloomFilterErrorRate == DefaultBloomFilterErrorRate
       config.maxMessageHistory == DefaultMaxMessageHistory
+
+  asyncTest "empty channel IDs cannot be registered or wrapped":
+    let ensured = await rm.ensureChannel("")
+    let wrapped = await rm.wrapOutgoingMessage(@[byte(1)], "invalid", "")
+    check:
+      ensured.isErr()
+      ensured.error == ReliabilityError.reInvalidArgument
+      wrapped.isErr()
+      wrapped.error == ReliabilityError.reInvalidArgument
+      "" notin rm.channels
+      (await rm.tick()).len == 0
 
   asyncTest "FFI responses encode binary payloads and distinguish metadata":
     let data = @[byte(0), 1, 255]
@@ -113,6 +124,32 @@ suite "Core Operations":
     check (await rm.unwrapReceivedMessage(serializeMessage(message).get())).isOk()
     check (await rm.tick()).len == 0
 
+  asyncTest "busy receive-only channels publish pending acknowledgement summaries":
+    let sender = newReliabilityManager(participantId = "bob").get()
+    let channel = rm.channels[testChannel]
+    channel.syncJitterInitialized = true
+    channel.syncJitter = initDuration(seconds = 5)
+    for i in 0 ..< 3:
+      let wrapped = await sender.wrapOutgoingMessage(@[byte(1)], "busy-" & $i, testChannel)
+      check (await rm.unwrapReceivedMessage(wrapped.get())).isOk()
+      check (await rm.tick()).len == 0
+    channel.lastSyncSent =
+      getTime() - rm.config.syncMessageInterval - initDuration(seconds = 6)
+    let events = await rm.tick()
+    check events.len == 1
+    check (await sender.unwrapReceivedMessage(events[0].payload)).isOk()
+    check sender.channels[testChannel].outgoingBuffer.len == 0
+    check not channel.syncSummaryPending
+    check (await rm.tick()).len == 0
+
+    let wrapped = await sender.wrapOutgoingMessage(@[byte(2)], "busy-next", testChannel)
+    check (await rm.unwrapReceivedMessage(wrapped.get())).isOk()
+    check (await rm.wrapOutgoingMessage(@[byte(3)], "summary-carrier", testChannel)).isOk()
+    channel.lastSyncSent =
+      getTime() - rm.config.syncMessageInterval - initDuration(seconds = 6)
+    check (await rm.tick()).len == 0
+    await sender.cleanup()
+
   asyncTest "due repair requests bypass quiet backoff but not send interval":
     let channel = rm.channels[testChannel]
     channel.syncJitterInitialized = true
@@ -128,6 +165,29 @@ suite "Core Operations":
     check deserializeMessage(events[0].payload).get().repairRequest[0].messageId == "missing"
     check "missing" in channel.outgoingRepairBuffer
     check (await rm.tick()).len == 0
+
+  asyncTest "sync repair retries rotate without extending expiry deadlines":
+    let channel = rm.channels[testChannel]
+    rm.config.maxRepairRequests = 2
+    let deadline = getTime() - initDuration(seconds = 10)
+    for i in 0 ..< 5:
+      channel.outgoingRepairBuffer["repair-" & $i] = OutgoingRepairEntry(
+        outHistEntry: HistoryEntry(messageId: "repair-" & $i),
+        minTimeRepairReq: deadline + initDuration(seconds = i),
+      )
+    var requested = initHashSet[SdsMessageID]()
+    for round in 0 ..< 3:
+      let sync = deserializeMessage((await rm.dueSync(testChannel)).get()).get()
+      check sync.repairRequest.len == 2
+      for entry in sync.repairRequest:
+        requested.incl(entry.messageId)
+    check requested.len == 5
+    check channel.outgoingRepairBuffer.len == 5
+    for i in 0 ..< 5:
+      check channel.outgoingRepairBuffer["repair-" & $i].minTimeRepairReq ==
+        deadline + initDuration(seconds = i)
+    let retry = deserializeMessage((await rm.dueSync(testChannel)).get()).get()
+    check retry.repairRequest.len == 2
 
   asyncTest "tick obtains retrieval hints for each channel":
     let other = "other-channel"
@@ -226,6 +286,55 @@ suite "Core Operations":
       bloomBefore
       not channel.bloomFilter.contains(sync.messageId)
       sync.messageId notin channel.messageHistory
+
+  asyncTest "looped-back sync cannot acknowledge local outgoing content":
+    var sentIDs: seq[SdsMessageID]
+    await rm.setCallbacks(nil,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        sentIDs.add(messageId),
+      nil,
+    )
+    check (await rm.wrapOutgoingMessage(@[byte(1)], "local-content", testChannel)).isOk()
+    let sync = (await rm.dueSync(testChannel)).get()
+    let channel = rm.channels[testChannel]
+    let activity = channel.lastSyncActivity
+    let received = await rm.unwrapReceivedMessage(sync)
+    check:
+      received.isOk()
+      received.get().message.isNone()
+      channel.outgoingBuffer.len == 1
+      sentIDs.len == 0
+      channel.lastSyncActivity == activity
+
+  asyncTest "repeated sync repair requests preserve the earliest response deadline":
+    check (await rm.wrapOutgoingMessage(@[byte(1)], "repair-content", testChannel)).isOk()
+    let request = SdsMessage.init(
+      messageId = "sds-periodic-sync", lamportTimestamp = 42,
+      causalHistory = @[], channelId = testChannel, content = @[],
+      bloomFilter = @[], senderId = "bob",
+      repairRequest = @[
+        HistoryEntry(messageId: "repair-content", senderId: "alice")
+      ],
+    )
+    let encoded = serializeMessage(request).get()
+    check (await rm.unwrapReceivedMessage(encoded)).isOk()
+    let channel = rm.channels[testChannel]
+    let later = getTime() + initDuration(seconds = 60)
+    channel.incomingRepairBuffer["repair-content"].minTimeRepairResp = later
+    check (await rm.unwrapReceivedMessage(encoded)).isOk()
+    check channel.incomingRepairBuffer["repair-content"].minTimeRepairResp < later
+    let earlier = getTime() - initDuration(seconds = 1)
+    channel.incomingRepairBuffer["repair-content"].minTimeRepairResp = earlier
+    check (await rm.unwrapReceivedMessage(encoded)).isOk()
+    check channel.incomingRepairBuffer["repair-content"].minTimeRepairResp == earlier
+    var repaired = 0
+    await rm.setCallbacks(nil, nil, nil,
+      onRepairReady = proc(message: seq[byte], channelId: SdsChannelID) {.gcsafe.} =
+        repaired += 1,
+    )
+    check (await rm.runRepairSweep()).isOk()
+    check repaired == 1
+    check "repair-content" notin channel.incomingRepairBuffer
 
   asyncTest "sync receive processes acknowledgements without persisting the sync":
     var sentIDs: seq[SdsMessageID]
