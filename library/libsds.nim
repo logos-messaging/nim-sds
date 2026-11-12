@@ -21,6 +21,7 @@ import sds/types/persistence
 import sds/protobuf as wire
 import sds/snapshot_codec
 import stew/byteutils
+import ./json_responses
 import
   ./events/[
     json_message_ready_event, json_message_sent_event, json_missing_dependencies_event,
@@ -40,6 +41,11 @@ declareLibrary("sds", ReliabilityManager)
 
 type SdsRetrievalHintProvider* = proc(
   messageId: cstring, hint: ptr cstring, hintLen: ptr csize_t, userData: pointer
+) {.cdecl, gcsafe, raises: [].}
+
+type SdsChannelRetrievalHintProvider* = proc(
+  messageId: cstring, channelId: cstring, hint: ptr cstring, hintLen: ptr csize_t,
+  userData: pointer
 ) {.cdecl, gcsafe, raises: [].}
 
 type SdsPersistenceCallback* = proc(
@@ -65,6 +71,8 @@ type PersistenceOperation = enum
 # it during message processing.
 var sdsRetrievalHintCb {.threadvar.}: pointer
 var sdsRetrievalHintUserData {.threadvar.}: pointer
+var sdsChannelRetrievalHintCb {.threadvar.}: pointer
+var sdsChannelRetrievalHintUserData {.threadvar.}: pointer
 var sdsPersistenceCb {.threadvar.}: pointer
 var sdsPersistenceUserData {.threadvar.}: pointer
 
@@ -80,7 +88,7 @@ type SdsWrapRequest* {.ffi.} = object
   messageId: string
   channelId: string
 
-type SdsSyncRequest* {.ffi.} = object
+type SdsChannelRequest* {.ffi.} = object
   channelId: string
 
 type SdsWrapResponse* {.ffi.} = object
@@ -235,6 +243,8 @@ proc sdsCreate*(
   # stale C function pointer is never invoked.
   sdsRetrievalHintCb = nil
   sdsRetrievalHintUserData = nil
+  sdsChannelRetrievalHintCb = nil
+  sdsChannelRetrievalHintUserData = nil
   sdsPersistenceCb = nil
   sdsPersistenceUserData = nil
 
@@ -292,9 +302,26 @@ proc sdsCreate*(
       return hintBytes
     return @[]
 
+  let channelRetrievalHintProvider = proc(
+      messageId: SdsMessageID, channelId: SdsChannelID
+  ): seq[byte] {.gcsafe.} =
+    if sdsChannelRetrievalHintCb.isNil():
+      return retrievalHintProvider(messageId)
+    var hint: cstring
+    var hintLen: csize_t
+    cast[SdsChannelRetrievalHintProvider](sdsChannelRetrievalHintCb)(
+      messageId.cstring, channelId.cstring, addr hint, addr hintLen,
+      sdsChannelRetrievalHintUserData
+    )
+    if not hint.isNil():
+      if hintLen > 0:
+        result = newSeq[byte](hintLen)
+        copyMem(addr result[0], hint, hintLen)
+      c_free(hint)
+
   await rm.setCallbacks(
     messageReadyCb, messageSentCb, missingDependenciesCb, periodicSyncCb,
-    retrievalHintProvider, repairReadyCb, messageExpiredCb,
+    retrievalHintProvider, repairReadyCb, messageExpiredCb, channelRetrievalHintProvider,
   )
 
   return ok(rm)
@@ -312,13 +339,15 @@ proc sdsWrapOutgoingMessage*(
     return err("error processing wrap request: " & $error)
   return ok(SdsWrapResponse(message: wrapped))
 
-proc sdsWrapSyncMessage*(
-    rm: ReliabilityManager, req: SdsSyncRequest
-): Future[Result[SdsWrapResponse, string]] {.ffi.} =
-  let wrapped = (await wrapSyncMessage(rm, req.channelId)).valueOr:
-    error "WRAP_SYNC_MESSAGE failed", error = error
-    return err("error processing sync wrap request: " & $error)
-  return ok(SdsWrapResponse(message: wrapped))
+proc sdsEnsureChannel*(
+    rm: ReliabilityManager, req: SdsChannelRequest
+): Future[Result[string, string]] {.ffi.} =
+  (await rm.ensureChannel(req.channelId)).isOkOr:
+    return err("error ensuring SDS channel: " & $error)
+  return ok("")
+
+proc sdsTick*(rm: ReliabilityManager): Future[Result[string, string]] {.ffi.} =
+  return ok(tickResponse(await rm.tick()))
 
 proc sdsUnwrapReceivedMessage*(
     rm: ReliabilityManager, req: SdsUnwrapRequest
@@ -326,23 +355,12 @@ proc sdsUnwrapReceivedMessage*(
   # The response carries nested objects (missingDeps) which the framework's
   # object serializer cannot emit, so the JSON is built by hand and returned as
   # a string. Shape matches the legacy unwrap response.
-  let (unwrapped, missingDeps, channelId, isSync) = (
+  let (unwrapped, missingDeps, channelId) = (
     await unwrapReceivedMessage(rm, req.message)
   ).valueOr:
     return err("error processing unwrap request: " & $error)
 
-  var node = newJObject()
-  node["message"] = %*unwrapped
-  node["channelId"] = %*channelId
-  node["isSync"] = %*isSync
-  var missingDepsNode = newJArray()
-  for dep in missingDeps:
-    var depNode = newJObject()
-    depNode["messageId"] = %*dep.messageId
-    depNode["retrievalHint"] = %*encode(dep.retrievalHint)
-    missingDepsNode.add(depNode)
-  node["missingDeps"] = missingDepsNode
-  return ok($node)
+  return ok(unwrapResponse(unwrapped, missingDeps, channelId))
 
 proc sdsMarkDependenciesMet*(
     rm: ReliabilityManager, req: SdsMarkDependenciesRequest
@@ -373,6 +391,8 @@ proc sdsStartPeriodicTasks*(
 proc sdsDestroy*(rm: ReliabilityManager) {.ffiDtor.} =
   sdsRetrievalHintCb = nil
   sdsRetrievalHintUserData = nil
+  sdsChannelRetrievalHintCb = nil
+  sdsChannelRetrievalHintUserData = nil
   sdsPersistenceCb = nil
   sdsPersistenceUserData = nil
 
@@ -406,6 +426,35 @@ proc sds_set_retrieval_hint_provider(
       ffi_context.sendRequestToFFIThread(
         ctx,
         SdsSetHintReq.ffiNewReq(
+          sdsNoopCallback, nil, cast[uint64](callback), cast[uint64](userData)
+        ),
+        ctxToken.tokenGeneration(),
+      )
+    except Exception as exc:
+      Result[void, string].err("sendRequestToFFIThread exception: " & exc.msg)
+  if sendRes.isErr():
+    return RET_ERR
+  return RET_OK
+
+registerReqFFI(SdsSetChannelHintReq, ctx: ptr FFIContext[ReliabilityManager]):
+  proc(cbAddr: uint64, udAddr: uint64): Future[Result[string, string]] {.async.} =
+    sdsChannelRetrievalHintCb = cast[pointer](cbAddr)
+    sdsChannelRetrievalHintUserData =
+      if cbAddr == 0: nil else: cast[pointer](udAddr)
+    return ok("")
+
+proc sds_set_channel_retrieval_hint_provider(
+    ctxToken: FFICtxToken, callback: SdsChannelRetrievalHintProvider, userData: pointer
+): cint {.dynlib, exportc, cdecl, raises: [].} =
+  initializeLibrary()
+  let ctx = ReliabilityManagerFFIPool.resolveCtx(ctxToken)
+  if ctx.isNil():
+    return RET_ERR
+  let sendRes =
+    try:
+      ffi_context.sendRequestToFFIThread(
+        ctx,
+        SdsSetChannelHintReq.ffiNewReq(
           sdsNoopCallback, nil, cast[uint64](callback), cast[uint64](userData)
         ),
         ctxToken.tokenGeneration(),

@@ -32,6 +32,7 @@ type ReliabilityManager* = ref object
   ) {.gcsafe.}
   onPeriodicSync*: PeriodicSyncCallback
   onRetrievalHint*: RetrievalHintProvider
+  onChannelRetrievalHint*: ChannelRetrievalHintProvider
   onRepairReady*: RepairReadyCallback
 
 proc new*(

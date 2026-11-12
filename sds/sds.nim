@@ -1,10 +1,25 @@
-import std/[algorithm, times, tables, sets, options]
+import std/[algorithm, times, tables, sets, options, sysrand]
 import chronos, results, chronicles
 import ./[types, protobuf, sds_utils, rolling_bloom_filter]
 
 export types, protobuf, sds_utils, rolling_bloom_filter
 
 const periodicSyncMessageID = "sds-periodic-sync"
+
+type TickEvent* = object
+  channelId*: SdsChannelID
+  payload*: seq[byte]
+  error*: Option[ReliabilityError]
+
+proc randomSyncJitter(interval: times.Duration): Result[times.Duration, ReliabilityError] =
+  var randomBytes: array[8, byte]
+  if not urandom(randomBytes):
+    return err(ReliabilityError.reInternalError)
+  var randomValue: uint64
+  for b in randomBytes:
+    randomValue = (randomValue shl 8) or uint64(b)
+  let maxJitterMs = interval.inMilliseconds div 2
+  return ok(initDuration(milliseconds = int64(randomValue mod uint64(maxJitterMs + 1))))
 
 proc newReliabilityManager*(
     participantId: SdsParticipantID,
@@ -103,10 +118,32 @@ proc wrapMessage(
     await rm.lock.acquire()
     try:
       try:
+        if isSync and channelId notin rm.channels:
+          return ok(newSeq[byte]())
         let channel = (await rm.getOrCreateChannel(channelId)).valueOr:
           return err(error)
+        let now = getTime()
+        var jitter = initDuration()
+        if isSync:
+          if rm.config.syncMessageInterval <= initDuration():
+            return err(ReliabilityError.reInvalidArgument)
+          let interval = rm.config.syncMessageInterval
+          if not channel.syncJitterInitialized:
+            channel.syncJitter = randomSyncJitter(interval).valueOr:
+              return err(error)
+            channel.syncJitterInitialized = true
+          var dueRepair = false
+          for _, entry in channel.outgoingRepairBuffer:
+            if now >= entry.minTimeRepairReq:
+              dueRepair = true
+              break
+          if now < channel.lastSyncActivity + interval + channel.syncJitter and
+              not (dueRepair and now >= channel.lastSyncSent + interval):
+            return ok(newSeq[byte]())
+          jitter = randomSyncJitter(interval).valueOr:
+            return err(error)
         (await rm.updateLamportTimestamp(
-          int64(getTime().toUnixFloat * 1000.0), channelId
+          int64(now.toUnixFloat * 1000.0), channelId
         )).isOkOr:
           return err(error)
 
@@ -120,7 +157,6 @@ proc wrapMessage(
         # the smallest minTimeRepairReq — they are the most overdue and the
         # ones the network most needs us to ask about.
         var repairReqs: seq[HistoryEntry] = @[]
-        let now = getTime()
         var expiredKeys: seq[SdsMessageID] = @[]
         var eligible: seq[(SdsMessageID, OutgoingRepairEntry)] = @[]
         for msgId, repairEntry in channel.outgoingRepairBuffer:
@@ -133,7 +169,8 @@ proc wrapMessage(
           repairReqs.add(eligible[i][1].outHistEntry)
           expiredKeys.add(eligible[i][0])
         for key in expiredKeys:
-          channel.outgoingRepairBuffer.del(key)
+          if not isSync:
+            channel.outgoingRepairBuffer.del(key)
           # Phase 2B: in-memory deletion only; op-end trySaveMeta covers it.
 
         let causalHistory = (
@@ -171,7 +208,13 @@ proc wrapMessage(
         await rm.trySaveMeta(channelId, channel)
         await rm.tryUpdateHistory(channelId)
 
-        return serializeMessage(msg)
+        let serialized = serializeMessage(msg).valueOr:
+          return err(error)
+        channel.lastSyncActivity = now
+        channel.lastSyncSent = now
+        if isSync:
+          channel.syncJitter = jitter
+        return ok(serialized)
       except CatchableError:
         error "Failed to wrap message",
           channelId = channelId, msg = getCurrentExceptionMsg()
@@ -191,12 +234,28 @@ proc wrapOutgoingMessage*(
 ): Future[Result[seq[byte], ReliabilityError]] {.async: (raises: []), gcsafe.} =
   return await wrapMessage(rm, message, messageId, channelId, isSync=false)
 
-proc wrapSyncMessage*(
-    rm: ReliabilityManager, channelId: SdsChannelID
-): Future[Result[seq[byte], ReliabilityError]] {.async: (raises: []), gcsafe.} =
-  ## Builds a metadata-only sync message. Its fixed ID is safe to reuse because
-  ## sync messages are excluded from deduplication state and the local log.
-  return await wrapMessage(rm, @[], periodicSyncMessageID, channelId, isSync=true)
+proc tick*(rm: ReliabilityManager): Future[seq[TickEvent]] {.
+    async: (raises: []), gcsafe
+.} =
+  ## Generate due sync payloads for loaded channels. Each error is returned
+  ## alongside its channel so successful payloads are never lost.
+  var channelIds: seq[SdsChannelID]
+  try:
+    await rm.lock.acquire()
+    try:
+      for channelId in rm.channels.keys:
+        channelIds.add(channelId)
+    finally:
+      rm.lock.release()
+    for channelId in channelIds:
+      let generated = await wrapMessage(rm, @[], periodicSyncMessageID, channelId, isSync=true)
+      if generated.isErr():
+        result.add(TickEvent(channelId: channelId, error: some(generated.error)))
+      elif generated.value.len > 0:
+        result.add(TickEvent(channelId: channelId, payload: generated.value))
+  except CatchableError:
+    error "Failed to tick SDS channels", msg = getCurrentExceptionMsg()
+    result.add(TickEvent(error: some(ReliabilityError.reInternalError)))
 
 proc processIncomingBuffer(
     rm: ReliabilityManager, channelId: SdsChannelID
@@ -264,10 +323,9 @@ proc unwrapReceivedMessage*(
 ): Future[
     Result[
       tuple[
-        message: seq[byte],
+        message: Option[seq[byte]],
         missingDeps: seq[HistoryEntry],
         channelId: SdsChannelID,
-        isSync: bool,
       ],
       ReliabilityError,
     ]
@@ -282,6 +340,7 @@ proc unwrapReceivedMessage*(
 
     let channel = (await rm.getOrCreateChannel(channelId)).valueOr:
       return err(error)
+    channel.lastSyncActivity = getTime()
     let isSync = msg.content.len == 0
 
     # SDS-R: opportunistic repair-buffer cleanup — applies to duplicates too,
@@ -297,7 +356,7 @@ proc unwrapReceivedMessage*(
       # entries from a prior failed write get retried here too).
       await rm.trySaveMeta(channelId, channel)
       await rm.tryUpdateHistory(channelId)
-      return ok((msg.content, @[], channelId, false))
+      return ok((some(msg.content), @[], channelId))
 
     if not isSync:
       channel.bloomFilter.add(msg.messageId)
@@ -412,7 +471,8 @@ proc unwrapReceivedMessage*(
     await rm.trySaveMeta(channelId, channel)
     await rm.tryUpdateHistory(channelId)
 
-    return ok((msg.content, missingDeps, channelId, isSync))
+    let payload = if isSync: none(seq[byte]) else: some(msg.content)
+    return ok((payload, missingDeps, channelId))
   except CatchableError:
     error "Failed to unwrap message", msg = getCurrentExceptionMsg()
     return err(ReliabilityError.reDeserializationError)
@@ -465,6 +525,7 @@ proc setCallbacks*(
     onRetrievalHint: RetrievalHintProvider = nil,
     onRepairReady: RepairReadyCallback = nil,
     onMessageExpired: MessageExpiredCallback = nil,
+    onChannelRetrievalHint: ChannelRetrievalHintProvider = nil,
 ) {.async: (raises: []).} =
   ## Sets the callback functions for various events in the ReliabilityManager.
   try:
@@ -475,6 +536,7 @@ proc setCallbacks*(
       rm.onMissingDependencies = onMissingDependencies
       rm.onPeriodicSync = onPeriodicSync
       rm.onRetrievalHint = onRetrievalHint
+      rm.onChannelRetrievalHint = onChannelRetrievalHint
       rm.onRepairReady = onRepairReady
       rm.onMessageExpired = onMessageExpired
     finally:
