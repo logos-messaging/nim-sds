@@ -150,6 +150,53 @@ suite "Core Operations":
     check (await rm.tick()).len == 0
     await sender.cleanup()
 
+  asyncTest "summary changes during sync persistence remain pending":
+    var channel: ChannelContext
+    var injectSummaryChange = true
+    let persistence = Persistence(
+      saveChannelMeta: proc(
+          channelId: SdsChannelID, meta: ChannelMeta
+      ): Future[Result[void, string]] {.async: (raises: []), gcsafe.} =
+        if injectSummaryChange:
+          injectSummaryChange = false
+          channel.bloomFilter.add("change-during-sync")
+          channel.markSyncSummaryChanged()
+        ok(),
+      updateHistory: proc(
+          channelId: SdsChannelID, update: HistoryUpdate
+      ): Future[Result[void, string]] {.async: (raises: []), gcsafe.} =
+        ok(),
+      loadChannel: proc(
+          channelId: SdsChannelID
+      ): Future[Result[ChannelData, string]] {.async: (raises: []), gcsafe.} =
+        ok(ChannelData.init()),
+      dropChannel: proc(
+          channelId: SdsChannelID
+      ): Future[Result[void, string]] {.async: (raises: []), gcsafe.} =
+        ok(),
+    )
+    let manager = newReliabilityManager(participantId = "alice", persistence = persistence).get()
+    check (await manager.ensureChannel(testChannel)).isOk()
+    channel = manager.channels[testChannel]
+    channel.lastSyncActivity =
+      getTime() - manager.config.syncMessageInterval - initDuration(seconds = 1)
+    channel.syncJitterInitialized = true
+    channel.syncJitter = initDuration()
+
+    let first = (await manager.tick())[0]
+    check first.error.isNone()
+    check channel.syncSummaryPending
+    channel.lastSyncActivity = getTime()
+    channel.lastSyncSent =
+      getTime() - manager.config.syncMessageInterval - initDuration(seconds = 1)
+    channel.syncJitter = initDuration()
+    let second = (await manager.tick())[0]
+    check second.error.isNone()
+    let summary = deserializeMessage(second.payload).get()
+    check summary.bloomFilter == serializeBloomFilter(channel.bloomFilter.filter).get()
+    check not channel.syncSummaryPending
+    await manager.cleanup()
+
   asyncTest "due repair requests bypass quiet backoff but not send interval":
     let channel = rm.channels[testChannel]
     channel.syncJitterInitialized = true

@@ -16,6 +16,7 @@ type ChannelContext* = ref object
   syncJitter*: Duration
   syncJitterInitialized*: bool
   syncSummaryPending*: bool
+  syncSummaryVersion*: uint64
   repairRequestAttempts*: Table[SdsMessageID, Time]
   messageHistory*: OrderedTable[SdsMessageID, SdsMessage]
     ## Single source of truth for delivered messages. Holds the deserialized
@@ -70,3 +71,7 @@ proc new*(T: type ChannelContext, bloomFilter: RollingBloomFilter): T =
     pendingHistoryAppends: initOrderedSet[SdsMessageID](),
     pendingHistoryEvicts: initHashSet[SdsMessageID](),
   )
+
+proc markSyncSummaryChanged*(channel: ChannelContext) =
+  channel.syncSummaryVersion += 1
+  channel.syncSummaryPending = true

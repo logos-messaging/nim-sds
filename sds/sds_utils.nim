@@ -217,7 +217,7 @@ proc addToHistory*(
     if channelId in rm.channels:
       let channel = rm.channels[channelId]
       channel.messageHistory[msg.messageId] = msg
-      channel.syncSummaryPending = true
+      channel.markSyncSummaryChanged()
       queueHistoryAppend(channel, msg.messageId)
       while channel.messageHistory.len > rm.config.maxMessageHistory:
         var firstKey: SdsMessageID
