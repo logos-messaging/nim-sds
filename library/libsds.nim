@@ -14,7 +14,7 @@
 when not compileOption("threads"):
   {.error: "libsds needs --threads:on".}
 
-import std/[base64, json, options]
+import std/[base64, json, options, times]
 import ffi
 import sds
 import sds/types/persistence
@@ -44,8 +44,8 @@ type SdsRetrievalHintProvider* = proc(
 ) {.cdecl, gcsafe, raises: [].}
 
 type SdsChannelRetrievalHintProvider* = proc(
-  messageId: cstring, channelId: cstring, hint: ptr cstring, hintLen: ptr csize_t,
-  userData: pointer
+  messageId: cstring, channelId: ptr byte, channelIdLen: csize_t,
+  hint: ptr cstring, hintLen: ptr csize_t, userData: pointer
 ) {.cdecl, gcsafe, raises: [].}
 
 type SdsPersistenceCallback* = proc(
@@ -82,6 +82,7 @@ var sdsPersistenceUserData {.threadvar.}: pointer
 type SdsConfig* {.ffi.} = object
   participantId: string ## empty disables SDS-R (see newReliabilityManager)
   persistenceEnabled: bool
+  syncMessageIntervalMs: int64 ## test-only override; zero uses the default
 
 type SdsWrapRequest* {.ffi.} = object
   message: seq[byte]
@@ -249,7 +250,16 @@ proc sdsCreate*(
   sdsPersistenceUserData = nil
 
   let persistence = if config.persistenceEnabled: ffiPersistence() else: noOpPersistence()
-  let rm = newReliabilityManager(participantId = config.participantId.SdsParticipantID, persistence = persistence).valueOr:
+  var reliabilityConfig = defaultConfig()
+  if config.syncMessageIntervalMs > 0:
+    reliabilityConfig.syncMessageInterval =
+      initDuration(milliseconds = config.syncMessageIntervalMs)
+
+  let rm = newReliabilityManager(
+    participantId = config.participantId.SdsParticipantID,
+    config = reliabilityConfig,
+    persistence = persistence,
+  ).valueOr:
     error "Failed creating reliability manager", error = error
     return err("Failed creating reliability manager: " & $error)
 
@@ -309,8 +319,11 @@ proc sdsCreate*(
       return retrievalHintProvider(messageId)
     var hint: cstring
     var hintLen: csize_t
+    var channelIdPtr: ptr byte
+    if channelId.len > 0:
+      channelIdPtr = cast[ptr byte](unsafeAddr channelId[0])
     cast[SdsChannelRetrievalHintProvider](sdsChannelRetrievalHintCb)(
-      messageId.cstring, channelId.cstring, addr hint, addr hintLen,
+      messageId.cstring, channelIdPtr, csize_t(channelId.len), addr hint, addr hintLen,
       sdsChannelRetrievalHintUserData
     )
     if not hint.isNil():
