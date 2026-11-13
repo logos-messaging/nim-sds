@@ -49,6 +49,44 @@ repeated repair requests cannot postpone an already scheduled response.
 Generated payloads are not queued for retransmission if publication fails; a
 later due sync contains a fresh summary.
 
+## Incoming message validation
+
+SDS assumes a trusted channel. Pass an optional `Validator` to
+`unwrapReceivedMessage` to authorize the decoded message before SDS creates or
+loads a channel, deduplicates, updates state, or emits events:
+
+```nim
+let validator = Validator(
+  validate: proc(message: SdsMessage): Result[bool, string] {.gcsafe, raises: [].} =
+    ok(isAuthorized(message))
+)
+let received = await manager.unwrapReceivedMessage(payload, validator)
+```
+
+`ok(true)` accepts the message; `ok(false)` returns `reMessageRejected`; an
+`err` is logged and returns `reValidationError`. Both failures leave SDS state
+untouched. A missing validator retains the existing behavior. Validation runs
+for duplicates and empty-content sync messages too, including self syncs.
+Validators must not mutate the decoded message or re-enter the same manager.
+
+C hosts register the optional synchronous callback with `sds_set_validator`.
+It receives the decoded channel ID, content, untrusted SDS sender ID, and the
+unwrap request's optional opaque `validationContext` bytes. Use that context
+to supply authenticated sender information; the wire `senderId` is not proof
+of identity. Older unwrap requests may omit `validationContext`.
+Rejection and validation errors propagate through the normal unwrap error
+response, never as a successful empty-content result or a decoding error.
+`sds_set_validator` queues registration and clearing on the context worker.
+Its `RET_OK` return only indicates that the change was queued; wait for its
+completion callback to receive the worker's terminal result before relying on
+the new registration. Keep each registered validator callback and its
+`userData` alive until `sds_destroy` succeeds. Clearing or replacing the
+validator does not make prior callback state safe to release, and if
+destruction fails, retain the callback state. The completion callback runs
+after the change is applied; its `userData` need only remain alive until that
+callback returns. Do not re-enter the same context from either callback.
+See `library/libsds.h` for the C API contract.
+
 ## Prerequisites
 
 - [Nix](https://nixos.org/download/) package manager
