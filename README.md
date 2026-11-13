@@ -43,6 +43,35 @@ repeated repair requests cannot postpone an already scheduled response.
 Generated payloads are not queued for retransmission if publication fails; a
 later due sync contains a fresh summary.
 
+## Incoming message validation
+
+SDS assumes a trusted channel. Pass an optional `Validator` to
+`unwrapReceivedMessage` to authorize the decoded message before SDS creates or
+loads a channel, deduplicates, updates state, or emits events:
+
+```nim
+let validator = Validator(
+  validate: proc(message: SdsMessage): Result[bool, string] {.gcsafe, raises: [].} =
+    ok(isAuthorized(message))
+)
+let received = await manager.unwrapReceivedMessage(payload, validator)
+```
+
+`ok(true)` accepts the message; `ok(false)` returns `reMessageRejected`; an
+`err` is logged and returns `reValidationError`. Both failures leave SDS state
+untouched. A missing validator retains the existing behavior. Validation runs
+for duplicates and empty-content sync messages too, including self syncs.
+Validators must not mutate the decoded message or re-enter the same manager.
+
+C hosts register the optional synchronous callback with `sds_set_validator`.
+It receives the decoded channel ID, content, untrusted SDS sender ID, and the
+unwrap request's optional opaque `validationContext` bytes. Use that context
+to supply authenticated sender information; the wire `senderId` is not proof
+of identity. Older unwrap requests may omit `validationContext`.
+Rejection and validation errors propagate through the normal unwrap error
+response, never as a successful empty-content result or a decoding error.
+See `library/libsds.h` for return values and callback lifetime requirements.
+
 ## Prerequisites
 
 - [Nix](https://nixos.org/download/) package manager

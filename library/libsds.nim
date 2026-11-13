@@ -6,10 +6,9 @@
 ## Exported C names are snake_case (`sds_wrap_outgoing_message`, …); see
 ## `library/libsds.h`.
 ##
-## The exceptions are `sds_set_retrieval_hint_provider` and
-## `sds_set_persistence_callback`: they take C function pointers, which have no
-## sensible JSON representation, so they are hand-written and dispatched to the
-## worker thread.
+## The callback setters, including `sds_set_validator`, are hand-written and
+## dispatched to the worker thread because C function pointers cannot be
+## serialized in requests.
 
 when not compileOption("threads"):
   {.error: "libsds needs --threads:on".}
@@ -59,6 +58,19 @@ type SdsPersistenceCallback* = proc(
   userData: pointer,
 ) : cint {.cdecl, gcsafe, raises: [].}
 
+const
+  SdsValidationAccept* = 0.cint
+  SdsValidationReject* = 1.cint
+  SdsValidationError* = 2.cint
+
+type SdsValidatorCallback* = proc(
+  channelId: ptr byte, channelIdLen: csize_t,
+  content: ptr byte, contentLen: csize_t,
+  senderId: ptr byte, senderIdLen: csize_t,
+  validationContext: ptr byte, validationContextLen: csize_t,
+  userData: pointer,
+): cint {.cdecl, gcsafe, raises: [].}
+
 type PersistenceOperation = enum
   SaveChannelMeta = 1
   UpdateHistory = 2
@@ -75,6 +87,8 @@ var sdsChannelRetrievalHintCb {.threadvar.}: pointer
 var sdsChannelRetrievalHintUserData {.threadvar.}: pointer
 var sdsPersistenceCb {.threadvar.}: pointer
 var sdsPersistenceUserData {.threadvar.}: pointer
+var sdsValidatorCb {.threadvar.}: pointer
+var sdsValidatorUserData {.threadvar.}: pointer
 
 ################################################################################
 ### JSON-marshalled request/response types
@@ -97,6 +111,7 @@ type SdsWrapResponse* {.ffi.} = object
 
 type SdsUnwrapRequest* {.ffi.} = object
   message: seq[byte]
+  validationContext: seq[byte] ## Opaque host context; not part of the wire message.
 
 type SdsMarkDependenciesRequest* {.ffi.} = object
   messageIds: seq[string]
@@ -248,6 +263,8 @@ proc sdsCreate*(
   sdsChannelRetrievalHintUserData = nil
   sdsPersistenceCb = nil
   sdsPersistenceUserData = nil
+  sdsValidatorCb = nil
+  sdsValidatorUserData = nil
 
   let persistence = if config.persistenceEnabled: ffiPersistence() else: noOpPersistence()
   var reliabilityConfig = defaultConfig()
@@ -368,8 +385,36 @@ proc sdsUnwrapReceivedMessage*(
   # The response carries nested objects (missingDeps) which the framework's
   # object serializer cannot emit, so the JSON is built by hand and returned as
   # a string. Shape matches the legacy unwrap response.
+  var validator: Validator
+  if not sdsValidatorCb.isNil():
+    let callback = cast[SdsValidatorCallback](sdsValidatorCb)
+    let userData = sdsValidatorUserData
+    validator.validate = proc(message: SdsMessage): Result[bool, string] {.
+        gcsafe, raises: []
+    .} =
+      let senderId = string(message.senderId)
+      var channelIdPtr, contentPtr, senderIdPtr, contextPtr: ptr byte
+      if message.channelId.len > 0:
+        channelIdPtr = cast[ptr byte](unsafeAddr message.channelId[0])
+      if message.content.len > 0:
+        contentPtr = unsafeAddr message.content[0]
+      if senderId.len > 0:
+        senderIdPtr = cast[ptr byte](unsafeAddr senderId[0])
+      if req.validationContext.len > 0:
+        contextPtr = unsafeAddr req.validationContext[0]
+      let status = callback(
+        channelIdPtr, csize_t(message.channelId.len),
+        contentPtr, csize_t(message.content.len),
+        senderIdPtr, csize_t(senderId.len),
+        contextPtr, csize_t(req.validationContext.len), userData,
+      )
+      case status
+      of SdsValidationAccept: return ok(true)
+      of SdsValidationReject: return ok(false)
+      else: return err("SDS validator callback failed: " & $status)
+
   let (unwrapped, missingDeps, channelId) = (
-    await unwrapReceivedMessage(rm, req.message)
+    await unwrapReceivedMessage(rm, req.message, validator)
   ).valueOr:
     return err("error processing unwrap request: " & $error)
 
@@ -408,6 +453,8 @@ proc sdsDestroy*(rm: ReliabilityManager) {.ffiDtor.} =
   sdsChannelRetrievalHintUserData = nil
   sdsPersistenceCb = nil
   sdsPersistenceUserData = nil
+  sdsValidatorCb = nil
+  sdsValidatorUserData = nil
 
 ################################################################################
 ### Retrieval-hint provider (hand-written: a C function pointer cannot be passed
@@ -498,6 +545,35 @@ proc sds_set_persistence_callback(
       ffi_context.sendRequestToFFIThread(
         ctx,
         SdsSetPersistenceReq.ffiNewReq(
+          sdsNoopCallback, nil, cast[uint64](callback), cast[uint64](userData)
+        ),
+        ctxToken.tokenGeneration(),
+      )
+    except Exception as exc:
+      Result[void, string].err("sendRequestToFFIThread exception: " & exc.msg)
+  if sendRes.isErr():
+    return RET_ERR
+  return RET_OK
+
+registerReqFFI(SdsSetValidatorReq, ctx: ptr FFIContext[ReliabilityManager]):
+  proc(cbAddr: uint64, udAddr: uint64): Future[Result[string, string]] {.async.} =
+    sdsValidatorCb = cast[pointer](cbAddr)
+    sdsValidatorUserData =
+      if cbAddr == 0: nil else: cast[pointer](udAddr)
+    return ok("")
+
+proc sds_set_validator(
+    ctxToken: FFICtxToken, callback: SdsValidatorCallback, userData: pointer
+): cint {.dynlib, exportc, cdecl, raises: [].} =
+  initializeLibrary()
+  let ctx = ReliabilityManagerFFIPool.resolveCtx(ctxToken)
+  if ctx.isNil():
+    return RET_ERR
+  let sendRes =
+    try:
+      ffi_context.sendRequestToFFIThread(
+        ctx,
+        SdsSetValidatorReq.ffiNewReq(
           sdsNoopCallback, nil, cast[uint64](callback), cast[uint64](userData)
         ),
         ctxToken.tokenGeneration(),

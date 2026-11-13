@@ -55,6 +55,31 @@ int sds_set_retrieval_hint_provider(void* ctx, SdsRetrievalHintProvider callback
 typedef void (*SdsChannelRetrievalHintProvider)(const char* messageId, const uint8_t* channelId, size_t channelIdLen, char** hint, size_t* hintLen, void* userData);
 int sds_set_channel_retrieval_hint_provider(void* ctx, SdsChannelRetrievalHintProvider callback, void* userData);
 
+typedef enum SdsValidationResult {
+  SDS_VALIDATION_ACCEPT = 0,
+  SDS_VALIDATION_REJECT = 1,
+  SDS_VALIDATION_ERROR = 2,
+} SdsValidationResult;
+
+// Synchronous authorization gate, called after decoding and before any SDS
+// state processing, including for duplicates and empty-content sync messages.
+// Buffers are borrowed for this call only; lengths are authoritative. Empty
+// buffers may be NULL. validationContext comes from the unwrap request, not
+// the wire. senderId is untrusted wire metadata.
+// Return SDS_VALIDATION_ACCEPT, SDS_VALIDATION_REJECT, or SDS_VALIDATION_ERROR.
+// Do not re-enter this context from the callback.
+typedef int (*SdsValidatorCallback)(
+    const uint8_t* channelId, size_t channelIdLen,
+    const uint8_t* content, size_t contentLen,
+    const uint8_t* senderId, size_t senderIdLen,
+    const uint8_t* validationContext, size_t validationContextLen,
+    void* userData);
+
+// Queue registration (or clear with NULL) on this context's worker thread.
+// Returns RET_OK when queued, RET_ERR otherwise. Keep callback/userData alive
+// until queued work has completed or sds_destroy succeeds.
+int sds_set_validator(void* ctx, SdsValidatorCallback callback, void* userData);
+
 typedef enum SdsPersistenceOperation {
   SDS_PERSISTENCE_SAVE_CHANNEL_META = 1,
   SDS_PERSISTENCE_UPDATE_HISTORY = 2,
