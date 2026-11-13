@@ -52,7 +52,7 @@ typedef void (*SdsRetrievalHintProvider)(const char* messageId, char** hint, siz
 int sds_set_retrieval_hint_provider(void* ctx, SdsRetrievalHintProvider callback, void* userData);
 
 // Channel-aware provider takes precedence over the legacy provider when set.
-typedef void (*SdsChannelRetrievalHintProvider)(const char* messageId, const char* channelId, char** hint, size_t* hintLen, void* userData);
+typedef void (*SdsChannelRetrievalHintProvider)(const char* messageId, const uint8_t* channelId, size_t channelIdLen, char** hint, size_t* hintLen, void* userData);
 int sds_set_channel_retrieval_hint_provider(void* ctx, SdsChannelRetrievalHintProvider callback, void* userData);
 
 typedef enum SdsPersistenceOperation {
