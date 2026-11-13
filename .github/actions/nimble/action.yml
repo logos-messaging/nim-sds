@@ -12,7 +12,7 @@ runs:
   steps:
     # The Nimble bundled with Nim resolves installDirs against srcDir, so a
     # dependent that installs this package gets no library/.
-    - uses: nim-lang/setup-nimble-action@v2
+    - uses: nim-lang/setup-nimble-action@a131f58ccfd21bc926d1fee0cffabee76898dfcf # v2.1.0
       with:
         nimble-version: '0.26.0'
         repo-token: ${{ inputs.repo-token }}
