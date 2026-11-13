@@ -14,9 +14,10 @@ import ./types/channel_context
 import ./types/persistence
 import ./types/reliability_manager
 import ./types/protobuf_error
+import ./types/validator
 
 export
   sds_message_id, history_entry, sds_message, unacknowledged_message, incoming_message,
   bloom_filter, rolling_bloom_filter, reliability_error, callbacks, app_callbacks,
   reliability_config, repair_entry, channel_context, persistence, reliability_manager,
-  protobuf_error
+  protobuf_error, validator
