@@ -1192,6 +1192,190 @@ suite "Periodic Tasks & Buffer Management":
 
     check syncCallCount > 0
 
+suite "Incoming Message Validation":
+  asyncTest "validator receives decoded content before channel loading":
+    var loads = 0
+    var persistence = noOpPersistence()
+    persistence.loadChannel = proc(
+        channelId: SdsChannelID
+    ): Future[Result[ChannelData, string]] {.async: (raises: []), gcsafe.} =
+      inc loads
+      return ok(ChannelData.init())
+    let manager = newReliabilityManager("alice", persistence = persistence).get()
+    defer: await manager.cleanup()
+    let message = SdsMessage.init(
+      messageId = "rejected", lamportTimestamp = 99,
+      causalHistory = @[HistoryEntry.init("fake-dependency")],
+      channelId = "new-channel", content = @[byte(0), 255],
+      bloomFilter = @[], senderId = "bob",
+    )
+    var calls = 0
+    let validator = Validator(
+      validate: proc(decoded: SdsMessage): Result[bool, string] {.
+          gcsafe, raises: []
+      .} =
+        inc calls
+        if decoded != message or manager.channels.len != 0 or loads != 0:
+          return err("unexpected decoded message or premature channel load")
+        return ok(false)
+    )
+    let received = await manager.unwrapReceivedMessage(
+      serializeMessage(message).get(), validator
+    )
+    check:
+      received.isErr()
+      received.error == ReliabilityError.reMessageRejected
+      calls == 1
+      loads == 0
+      manager.channels.len == 0
+      (await manager.tick()).len == 0
+
+  asyncTest "rejected metadata cannot change existing state or emit events":
+    var persistenceCalls = 0
+    var persistence = noOpPersistence()
+    persistence.saveChannelMeta = proc(
+        channelId: SdsChannelID, meta: ChannelMeta
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.} =
+      inc persistenceCalls
+      return ok()
+    persistence.updateHistory = proc(
+        channelId: SdsChannelID, update: HistoryUpdate
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.} =
+      inc persistenceCalls
+      return ok()
+    let manager = newReliabilityManager("alice", persistence = persistence).get()
+    defer: await manager.cleanup()
+    check (await manager.wrapOutgoingMessage(
+      @[byte(1)], "pending-ack", testChannel
+    )).isOk()
+    let channel = manager.channels[testChannel]
+    let forgedBloom = serializeBloomFilter(channel.bloomFilter.filter).get()
+    let dependency = HistoryEntry.init("fake-dependency", senderId = "bob")
+    channel.outgoingRepairBuffer["attacker-message"] = OutgoingRepairEntry(
+      outHistEntry: dependency, minTimeRepairReq: getTime()
+    )
+    channel.incomingRepairBuffer["attacker-message"] = IncomingRepairEntry(
+      inHistEntry: dependency, cachedMessage: @[byte(1)], minTimeRepairResp: getTime()
+    )
+    var events = 0
+    await manager.setCallbacks(
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        events += 1,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        events += 1,
+      proc(
+          messageId: SdsMessageID, missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID
+      ) {.gcsafe.} =
+        events += 1,
+    )
+    let before = $channel[]
+    let callsBefore = persistenceCalls
+    var validatorCalls = 0
+    let validator = Validator(
+      validate: proc(message: SdsMessage): Result[bool, string] {.
+          gcsafe, raises: []
+      .} =
+        inc validatorCalls
+        return ok(false)
+    )
+    # Include duplicate and self-sync paths, which otherwise return early.
+    for variant in ["content", "duplicate", "sync", "self-sync"]:
+      let message = SdsMessage.init(
+        messageId = if variant == "duplicate": "pending-ack" else: "attacker-message",
+        lamportTimestamp = high(int64) - 1,
+        causalHistory = @[dependency], channelId = testChannel,
+        content = if variant in ["sync", "self-sync"]: @[] else: @[byte(2)],
+        bloomFilter = forgedBloom,
+        senderId = if variant == "self-sync": "alice" else: "bob",
+        repairRequest = @[HistoryEntry.init("pending-ack", senderId = "alice")],
+      )
+      let received = await manager.unwrapReceivedMessage(
+        serializeMessage(message).get(), validator
+      )
+      check:
+        received.isErr()
+        received.error == ReliabilityError.reMessageRejected
+        $channel[] == before
+        serializeBloomFilter(channel.bloomFilter.filter).get() == forgedBloom
+        persistenceCalls == callsBefore
+        events == 0
+    check validatorCalls == 4
+
+  asyncTest "validation errors are distinct and do not process metadata":
+    let manager = newReliabilityManager("alice").get()
+    defer: await manager.cleanup()
+    check (await manager.wrapOutgoingMessage(
+      @[byte(1)], "pending", testChannel
+    )).isOk()
+    let before = $manager.channels[testChannel][]
+    let message = SdsMessage.init(
+      messageId = "failed-validation", lamportTimestamp = high(int64) - 1,
+      causalHistory = @[HistoryEntry.init("pending")],
+      channelId = testChannel, content = @[byte(2)], bloomFilter = @[],
+    )
+    let validator = Validator(
+      validate: proc(message: SdsMessage): Result[bool, string] {.
+          gcsafe, raises: []
+      .} =
+        return err("authorization service unavailable")
+    )
+    let received = await manager.unwrapReceivedMessage(
+      serializeMessage(message).get(), validator
+    )
+    check:
+      received.isErr()
+      received.error == ReliabilityError.reValidationError
+      $manager.channels[testChannel][] == before
+
+  asyncTest "accepted messages retain acknowledgement and dependency processing":
+    let manager = newReliabilityManager("alice").get()
+    defer: await manager.cleanup()
+    check (await manager.wrapOutgoingMessage(
+      @[byte(1)], "pending", testChannel
+    )).isOk()
+    let channel = manager.channels[testChannel]
+    let message = SdsMessage.init(
+      messageId = "accepted", lamportTimestamp = 1,
+      causalHistory = @[HistoryEntry.init("missing", senderId = "bob")],
+      channelId = testChannel, content = @[byte(2)],
+      bloomFilter = serializeBloomFilter(channel.bloomFilter.filter).get(),
+    )
+    let validator = Validator(
+      validate: proc(message: SdsMessage): Result[bool, string] {.
+          gcsafe, raises: []
+      .} =
+        return ok(true)
+    )
+    let received = await manager.unwrapReceivedMessage(
+      serializeMessage(message).get(), validator
+    )
+    check:
+      received.isOk()
+      received.get().message == some(message.content)
+      received.get().missingDeps.len == 1
+      channel.outgoingBuffer.len == 0
+      "accepted" in channel.incomingBuffer
+      "missing" in channel.outgoingRepairBuffer
+
+  asyncTest "malformed input never reaches the validator":
+    let manager = newReliabilityManager("alice").get()
+    defer: await manager.cleanup()
+    var calls = 0
+    let validator = Validator(
+      validate: proc(message: SdsMessage): Result[bool, string] {.
+          gcsafe, raises: []
+      .} =
+        inc calls
+        return ok(true)
+    )
+    let received = await manager.unwrapReceivedMessage(@[byte(255)], validator)
+    check:
+      received.isErr()
+      received.error == ReliabilityError.reDeserializationError
+      calls == 0
+      manager.channels.len == 0
+
 # Special cases handling
 suite "Special Cases Handling":
   var rm: ReliabilityManager

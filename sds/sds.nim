@@ -344,7 +344,7 @@ proc processIncomingBuffer(
     err(ReliabilityError.reInternalError)
 
 proc unwrapReceivedMessage*(
-    rm: ReliabilityManager, message: seq[byte]
+    rm: ReliabilityManager, message: seq[byte], validator: Validator = Validator()
 ): Future[
     Result[
       tuple[
@@ -355,13 +355,23 @@ proc unwrapReceivedMessage*(
       ReliabilityError,
     ]
 ] {.async: (raises: []).} =
-  ## Unwraps a received message and processes its reliability metadata.
+  ## Decodes and optionally validates before processing reliability metadata.
   try:
     let channelId = extractChannelId(message).valueOr:
       return err(ReliabilityError.reDeserializationError)
 
     let msg = deserializeMessage(message).valueOr:
       return err(ReliabilityError.reDeserializationError)
+
+    if not validator.validate.isNil():
+      let accepted = validator.validate(msg).valueOr:
+        error "Incoming SDS message validation failed",
+          channelId = channelId, messageId = msg.messageId, reason = error
+        return err(ReliabilityError.reValidationError)
+      if not accepted:
+        debug "Incoming SDS message rejected",
+          channelId = channelId, messageId = msg.messageId
+        return err(ReliabilityError.reMessageRejected)
 
     let isSync = msg.content.len == 0
     if isSync and rm.participantId.len > 0 and msg.senderId == rm.participantId:
