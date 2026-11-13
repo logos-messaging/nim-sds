@@ -22,6 +22,28 @@ proc newV2Manager(
     .get()
 
 suite "Persistence: write → restart → read-back":
+  asyncTest "tick monitors a restored channel after it is ensured":
+    let store = newInMemoryStore()
+    let first = newV2Manager(store)
+    check (await first.wrapOutgoingMessage(@[1.byte], "persisted", testChannel)).isOk()
+    await first.cleanup()
+
+    let second = newV2Manager(store)
+    check (await second.tick()).len == 0
+    check (await second.ensureChannel(testChannel)).isOk()
+    check (await second.tick()).len == 0
+    second.channels[testChannel].lastSyncActivity =
+      getTime() - second.config.syncMessageInterval - initDuration(seconds = 1)
+    second.channels[testChannel].syncJitterInitialized = true
+    second.channels[testChannel].syncJitter = initDuration()
+    let events = await second.tick()
+    check events.len == 1
+    let history = deserializeMessage(events[0].payload).get().causalHistory
+    check:
+      history.len == 1
+      history[0].messageId == "persisted"
+    await second.cleanup()
+
   asyncTest "outgoing buffer survives restart":
     let store = newInMemoryStore()
     let rm1 = newV2Manager(store)
@@ -48,8 +70,8 @@ suite "Persistence: write → restart → read-back":
     # updateLamportTimestamp is now pure; the mutation is persisted by the
     # next op-end save. Drive a wrap to force a trySaveMeta.
     discard await rm1.wrapOutgoingMessage(@[byte(1)], "tick", testChannel)
-    # max(42,0)+1 then max(getTime().toUnix, 43)+1; whatever wrap sets is
-    # what we'll see. We just assert it stayed monotonic.
+    # max(42,0)+1 then max(current epoch milliseconds, 43)+1; whatever wrap
+    # sets is what we'll see. We just assert it stayed monotonic.
     check store.lamports[testChannel] >= 43
     let savedLamport = store.lamports[testChannel]
     await rm1.cleanup()

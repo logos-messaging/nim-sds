@@ -1,4 +1,4 @@
-import std/[sets, tables]
+import std/[sets, tables, times]
 import ./sds_message_id
 import ./sds_message
 import ./rolling_bloom_filter
@@ -11,6 +11,13 @@ export
 
 type ChannelContext* = ref object
   lamportTimestamp*: int64
+  lastSyncActivity*: Time
+  lastSyncSent*: Time
+  syncJitter*: Duration
+  syncJitterInitialized*: bool
+  syncSummaryPending*: bool
+  syncSummaryVersion*: uint64
+  repairRequestAttempts*: Table[SdsMessageID, Time]
   messageHistory*: OrderedTable[SdsMessageID, SdsMessage]
     ## Single source of truth for delivered messages. Holds the deserialized
     ## SdsMessage (which carries senderId, lamportTimestamp, content, etc.) so
@@ -52,6 +59,9 @@ type ChannelContext* = ref object
 proc new*(T: type ChannelContext, bloomFilter: RollingBloomFilter): T =
   return T(
     lamportTimestamp: 0,
+    lastSyncActivity: getTime(),
+    lastSyncSent: getTime(),
+    repairRequestAttempts: initTable[SdsMessageID, Time](),
     messageHistory: initOrderedTable[SdsMessageID, SdsMessage](),
     bloomFilter: bloomFilter,
     outgoingBuffer: @[],
@@ -61,3 +71,7 @@ proc new*(T: type ChannelContext, bloomFilter: RollingBloomFilter): T =
     pendingHistoryAppends: initOrderedSet[SdsMessageID](),
     pendingHistoryEvicts: initHashSet[SdsMessageID](),
   )
+
+proc markSyncSummaryChanged*(channel: ChannelContext) =
+  channel.syncSummaryVersion += 1
+  channel.syncSummaryPending = true

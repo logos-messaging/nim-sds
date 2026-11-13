@@ -217,6 +217,7 @@ proc addToHistory*(
     if channelId in rm.channels:
       let channel = rm.channels[channelId]
       channel.messageHistory[msg.messageId] = msg
+      channel.markSyncSummaryChanged()
       queueHistoryAppend(channel, msg.messageId)
       while channel.messageHistory.len > rm.config.maxMessageHistory:
         var firstKey: SdsMessageID
@@ -325,7 +326,10 @@ proc getRecentHistoryEntries*(
       var entries: seq[HistoryEntry] = @[]
       for msgId in recentMessageIds:
         var entry = HistoryEntry(messageId: msgId)
-        if not rm.onRetrievalHint.isNil():
+        if not rm.onChannelRetrievalHint.isNil():
+          {.cast(raises: []).}:
+            entry.retrievalHint = rm.onChannelRetrievalHint(msgId, channelId)
+        elif not rm.onRetrievalHint.isNil():
           {.cast(raises: []).}:
             entry.retrievalHint = rm.onRetrievalHint(msgId)
         entry.senderId = channel.messageHistory[msgId].senderId
@@ -422,6 +426,9 @@ proc getOrCreateChannel*(
   ## propagate err on load failure — the caller asked us to materialise a
   ## channel and we cannot do that without knowing the prior state. See
   ## PLAN §8.
+  if channelId.len == 0:
+    error "Cannot create SDS channel with empty ID"
+    return err(ReliabilityError.reInvalidArgument)
   try:
     if channelId notin rm.channels:
       let channel = ChannelContext.new(

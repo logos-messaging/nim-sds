@@ -36,6 +36,12 @@ extern "C" {
 //   periodic_sync         {"eventType":"periodic_sync"}
 //   repair_ready          {"eventType":"repair_ready","message":[10,4,116,101,115,116],"channelId":"my-chat"}
 
+// sds_ensure_channel loads a channel for periodic monitoring. sds_tick returns
+// a JSON array containing channelId and a base64-encoded payload for due
+// publications, or channelId and error for a failed channel. Unwrap returns a
+// base64-encoded message, or message: null when metadata was consumed without
+// an application payload.
+
 // Synchronous provider invoked by SDS-R to fetch a retrieval hint for a
 // message id. The implementation allocates `*hint` with malloc (and sets
 // `*hintLen`); the library takes ownership and frees it with free().
@@ -44,6 +50,10 @@ typedef void (*SdsRetrievalHintProvider)(const char* messageId, char** hint, siz
 // Register the retrieval-hint provider used by SDS-R. `ctx` is the handle
 // sds_create returned. Returns RET_OK or RET_ERR.
 int sds_set_retrieval_hint_provider(void* ctx, SdsRetrievalHintProvider callback, void* userData);
+
+// Channel-aware provider takes precedence over the legacy provider when set.
+typedef void (*SdsChannelRetrievalHintProvider)(const char* messageId, const uint8_t* channelId, size_t channelIdLen, char** hint, size_t* hintLen, void* userData);
+int sds_set_channel_retrieval_hint_provider(void* ctx, SdsChannelRetrievalHintProvider callback, void* userData);
 
 typedef enum SdsPersistenceOperation {
   SDS_PERSISTENCE_SAVE_CHANNEL_META = 1,
