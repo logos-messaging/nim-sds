@@ -24,7 +24,7 @@ import stew/byteutils
 import
   ./events/[
     json_message_ready_event, json_message_sent_event, json_missing_dependencies_event,
-    json_periodic_sync_event, json_repair_ready_event,
+    json_periodic_sync_event, json_repair_ready_event, json_message_expired_event,
   ]
 
 # Frees memory allocated by native callbacks with malloc. Must match that
@@ -258,6 +258,12 @@ proc sdsCreate*(
     dispatchFfiEvent("missing_dependencies"):
       $JsonMissingDependenciesEvent.new(messageId, missingDeps, channelId)
 
+  let messageExpiredCb = proc(
+      messageId: SdsMessageID, channelId: SdsChannelID
+  ) {.gcsafe.} =
+    dispatchFfiEvent("message_expired"):
+      $JsonMessageExpiredEvent.new(messageId, channelId)
+
   let periodicSyncCb: PeriodicSyncCallback = proc() {.gcsafe, raises: [].} =
     dispatchFfiEvent("periodic_sync"):
       $JsonPeriodicSyncEvent.new()
@@ -285,7 +291,7 @@ proc sdsCreate*(
 
   await rm.setCallbacks(
     messageReadyCb, messageSentCb, missingDependenciesCb, periodicSyncCb,
-    retrievalHintProvider, repairReadyCb,
+    retrievalHintProvider, repairReadyCb, messageExpiredCb,
   )
 
   return ok(rm)
