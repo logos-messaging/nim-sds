@@ -13,7 +13,7 @@
 when not compileOption("threads"):
   {.error: "libsds needs --threads:on".}
 
-import std/[base64, json, options, times]
+import std/[base64, json, locks, options, times]
 import ffi
 import sds
 import sds/types/persistence
@@ -89,6 +89,24 @@ var sdsPersistenceCb {.threadvar.}: pointer
 var sdsPersistenceUserData {.threadvar.}: pointer
 var sdsValidatorCb {.threadvar.}: pointer
 var sdsValidatorUserData {.threadvar.}: pointer
+
+type SdsValidatorSetWait = object
+  lock: Lock
+  cond: Cond
+  completed: bool
+  result: cint
+
+proc sdsValidatorSetComplete(
+    callerRet: cint, msg: ptr cchar, len: csize_t, userData: pointer
+) {.cdecl, gcsafe, raises: [].} =
+  if callerRet == RET_STALE_WARN or userData.isNil():
+    return
+  let state = cast[ptr SdsValidatorSetWait](userData)
+  acquire(state.lock)
+  state.result = callerRet
+  state.completed = true
+  signal(state.cond)
+  release(state.lock)
 
 ################################################################################
 ### JSON-marshalled request/response types
@@ -561,19 +579,26 @@ registerReqFFI(SdsSetValidatorReq, ctx: ptr FFIContext[ReliabilityManager]):
     return ok("")
 
 proc sds_set_validator(
-    ctxToken: FFICtxToken, callback: SdsValidatorCallback, userData: pointer,
-    completionCallback: FFICallback, completionUserData: pointer,
+    ctxToken: FFICtxToken, callback: SdsValidatorCallback, userData: pointer
 ): cint {.dynlib, exportc, cdecl, raises: [].} =
   initializeLibrary()
   let ctx = ReliabilityManagerFFIPool.resolveCtx(ctxToken)
-  if ctx.isNil() or completionCallback.isNil():
+  if ctx.isNil():
     return RET_ERR
+
+  var state: SdsValidatorSetWait
+  initLock(state.lock)
+  initCond(state.cond)
+  defer:
+    deinitCond(state.cond)
+    deinitLock(state.lock)
+
   let sendRes =
     try:
       ffi_context.sendRequestToFFIThread(
         ctx,
         SdsSetValidatorReq.ffiNewReq(
-          completionCallback, completionUserData,
+          sdsValidatorSetComplete, addr state,
           cast[uint64](callback), cast[uint64](userData)
         ),
         ctxToken.tokenGeneration(),
@@ -582,7 +607,13 @@ proc sds_set_validator(
       Result[void, string].err("sendRequestToFFIThread exception: " & exc.msg)
   if sendRes.isErr():
     return RET_ERR
-  return RET_OK
+
+  acquire(state.lock)
+  while not state.completed:
+    wait(state.cond, state.lock)
+  let ret = state.result
+  release(state.lock)
+  return ret
 
 # Emit binding metadata (no-op unless -d:ffiGenBindings). Must follow every
 # {.ffi.}/{.ffiCtor.}/{.ffiDtor.} annotation.

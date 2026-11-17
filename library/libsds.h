@@ -74,18 +74,15 @@ typedef int (*SdsValidatorCallback)(
     const uint8_t* validationContext, size_t validationContextLen,
     void* userData);
 
-// Queue registration (or clear with NULL) on this context's worker thread.
-// The completion callback receives the worker's terminal result after applying
-// the change. RET_OK from this function means only that the request was queued;
-// wait for the completion callback before relying on the new validator.
+// Register (or clear with NULL) on this context's worker thread. This call
+// blocks until the worker applies the change and returns its terminal result.
+// Configure the validator before accepting messages; do not call this from a
+// callback on the same context.
 // Keep callback/userData alive until sds_destroy succeeds. Clearing or
 // replacing the validator does not by itself make prior callback state safe to
-// release. completionUserData need only remain alive until completionCallback
-// returns. If sds_destroy fails, keep callback state alive because teardown
+// release. If sds_destroy fails, keep callback state alive because teardown
 // may not have completed.
-int sds_set_validator(
-    void* ctx, SdsValidatorCallback callback, void* userData,
-    FFICallback completionCallback, void* completionUserData);
+int sds_set_validator(void* ctx, SdsValidatorCallback callback, void* userData);
 
 typedef enum SdsPersistenceOperation {
   SDS_PERSISTENCE_SAVE_CHANNEL_META = 1,
