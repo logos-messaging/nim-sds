@@ -76,15 +76,13 @@ to supply authenticated sender information; the wire `senderId` is not proof
 of identity. Older unwrap requests may omit `validationContext`.
 Rejection and validation errors propagate through the normal unwrap error
 response, never as a successful empty-content result or a decoding error.
-`sds_set_validator` queues registration and clearing on the context worker.
-Its `RET_OK` return only indicates that the change was queued; wait for its
-completion callback to receive the worker's terminal result before relying on
-the new registration. Keep each registered validator callback and its
-`userData` alive until `sds_destroy` succeeds. Clearing or replacing the
-validator does not make prior callback state safe to release, and if
-destruction fails, retain the callback state. The completion callback runs
-after the change is applied; its `userData` need only remain alive until that
-callback returns. Do not re-enter the same context from either callback.
+`sds_set_validator` blocks until registration or clearing has been applied by
+the context worker and returns its terminal result. Configure it before
+accepting messages, and do not call it from a callback on that context. Keep
+each registered validator callback and its `userData` alive until
+`sds_destroy` succeeds. Clearing or replacing the validator does not make
+previous callback state safe to release, and if destruction fails, retain the
+callback state.
 See `library/libsds.h` for the C API contract.
 
 ## Prerequisites
