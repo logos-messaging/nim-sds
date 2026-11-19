@@ -49,40 +49,48 @@ repeated repair requests cannot postpone an already scheduled response.
 Generated payloads are not queued for retransmission if publication fails; a
 later due sync contains a fresh summary.
 
-## Incoming message validation
+## Incoming message authorization
 
-SDS assumes a trusted channel. Pass an optional `Validator` to
-`unwrapReceivedMessage` to authorize the decoded message before SDS creates or
-loads a channel, deduplicates, updates state, or emits events:
+SDS assumes a trusted channel. Configure an optional manager-wide `Authorizer`
+to authorize each decoded message before SDS creates or loads a channel,
+deduplicates, updates state, or emits events:
 
 ```nim
-let validator = Validator(
-  validate: proc(message: SdsMessage): Result[bool, string] {.gcsafe, raises: [].} =
+let authorizer = Authorizer(
+  authorize: proc(
+      message: SdsMessage, _authorizationContext: seq[byte]
+  ): Result[bool, string] {.gcsafe, raises: [].} =
     ok(isAuthorized(message))
 )
-let received = await manager.unwrapReceivedMessage(payload, validator)
+let configured = await manager.setAuthorizer(authorizer)
+if configured.isErr:
+  raise newException(ValueError, "could not configure authorizer")
+let received = await manager.unwrapReceivedMessage(payload)
 ```
 
 `ok(true)` accepts the message; `ok(false)` returns `reMessageRejected`; an
-`err` is logged and returns `reValidationError`. Both failures leave SDS state
-untouched. A missing validator retains the existing behavior. Validation runs
-for duplicates and empty-content sync messages too, including self syncs.
-Validators must not mutate the decoded message or re-enter the same manager.
+`err` is logged and returns `reAuthorizationError`. Both failures leave SDS
+state untouched. An unset authorizer retains the existing behavior.
+Authorization runs for duplicates and empty-content sync messages too,
+including self syncs. Authorizers must not mutate the decoded message or
+re-enter the same manager. An optional per-request `authorizationContext` can carry
+host-authenticated context, but it does not select or replace the manager's
+authorizer.
 
-C hosts register the optional synchronous callback with `sds_set_validator`.
+C hosts register the optional synchronous callback with `sds_set_authorizer`.
 It receives the decoded channel ID, content, untrusted SDS sender ID, and the
-unwrap request's optional opaque `validationContext` bytes. Use that context
+unwrap request's optional opaque `authorizationContext` bytes. Use that context
 to supply authenticated sender information; the wire `senderId` is not proof
-of identity. Older unwrap requests may omit `validationContext`.
-Rejection and validation errors propagate through the normal unwrap error
+of identity. Older unwrap requests may omit `authorizationContext`.
+Rejections and authorization errors propagate through the normal unwrap error
 response, never as a successful empty-content result or a decoding error.
-`sds_set_validator` blocks until registration or clearing has been applied by
-the context worker and returns its terminal result. Configure it before
-accepting messages, and do not call it from a callback on that context. Keep
-each registered validator callback and its `userData` alive until
-`sds_destroy` succeeds. Clearing or replacing the validator does not make
-previous callback state safe to release, and if destruction fails, retain the
-callback state.
+`sds_set_authorizer` blocks until the context worker applies registration,
+replacement, or clearing, after earlier queued work has completed. Configure
+it before accepting messages, and do not call it from a callback on that
+context. Keep each callback and its `userData` alive while registered. After a
+successful call that clears or replaces a callback, earlier uses have
+completed; a successful `sds_destroy` also ends its lifetime. If either call
+fails, retain the affected callback state.
 See `library/libsds.h` for the C API contract.
 
 ## Prerequisites
