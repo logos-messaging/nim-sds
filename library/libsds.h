@@ -54,35 +54,35 @@ int sds_set_retrieval_hint_provider(void* ctx, SdsRetrievalHintProvider callback
 typedef void (*SdsChannelRetrievalHintProvider)(const char* messageId, const unsigned char* channelId, size_t channelIdLen, char** hint, size_t* hintLen, void* userData);
 int sds_set_channel_retrieval_hint_provider(void* ctx, SdsChannelRetrievalHintProvider callback, void* userData);
 
-typedef enum SdsValidationResult {
-  SDS_VALIDATION_ACCEPT = 0,
-  SDS_VALIDATION_REJECT = 1,
-  SDS_VALIDATION_ERROR = 2,
-} SdsValidationResult;
+typedef enum SdsAuthorizationResult {
+  SDS_AUTHORIZATION_ACCEPT = 0,
+  SDS_AUTHORIZATION_REJECT = 1,
+  SDS_AUTHORIZATION_ERROR = 2,
+} SdsAuthorizationResult;
 
 // Synchronous authorization gate, called after decoding and before any SDS
 // state processing, including for duplicates and empty-content sync messages.
 // Buffers are borrowed for this call only; lengths are authoritative. Empty
-// buffers may be NULL. validationContext comes from the unwrap request, not
+// buffers may be NULL. authorizationContext comes from the unwrap request, not
 // the wire. senderId is untrusted wire metadata.
-// Return SDS_VALIDATION_ACCEPT, SDS_VALIDATION_REJECT, or SDS_VALIDATION_ERROR.
+// Return SDS_AUTHORIZATION_ACCEPT, SDS_AUTHORIZATION_REJECT, or SDS_AUTHORIZATION_ERROR.
 // Do not re-enter this context from the callback.
-typedef int (*SdsValidatorCallback)(
+typedef int (*SdsAuthorizerCallback)(
     const uint8_t* channelId, size_t channelIdLen,
     const uint8_t* content, size_t contentLen,
     const uint8_t* senderId, size_t senderIdLen,
-    const uint8_t* validationContext, size_t validationContextLen,
+    const uint8_t* authorizationContext, size_t authorizationContextLen,
     void* userData);
 
-// Register (or clear with NULL) on this context's worker thread. This call
-// blocks until the worker applies the change and returns its terminal result.
-// Configure the validator before accepting messages; do not call this from a
+// Register (or clear with NULL) the context's manager-wide authorizer. This
+// call blocks until the worker applies the change, after earlier queued work
+// has completed. Configure before accepting messages; do not call this from a
 // callback on the same context.
-// Keep callback/userData alive until sds_destroy succeeds. Clearing or
-// replacing the validator does not by itself make prior callback state safe to
-// release. If sds_destroy fails, keep callback state alive because teardown
-// may not have completed.
-int sds_set_validator(void* ctx, SdsValidatorCallback callback, void* userData);
+// Keep callback/userData alive while registered. After a successful call that
+// clears or replaces the callback, earlier uses have completed and future
+// requests use the new callback. A successful sds_destroy also ends the
+// callback lifetime. If either call fails, retain the affected callback state.
+int sds_set_authorizer(void* ctx, SdsAuthorizerCallback callback, void* userData);
 
 typedef enum SdsPersistenceOperation {
   SDS_PERSISTENCE_SAVE_CHANNEL_META = 1,
