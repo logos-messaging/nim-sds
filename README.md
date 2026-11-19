@@ -17,8 +17,11 @@ retries; these counters currently measure elapsed intervals, not transmissions.
 
 ## Periodic sync messages
 
-Call `tick()` regularly to obtain due payloads for loaded channels. Each event
-contains a channel ID and either a serialized payload to publish or an error.
+Call `tick()` regularly to obtain due payloads for loaded channels. Its result
+contains events and an optional overall error; process the events even when
+that error is present. Each event contains a channel ID and either a serialized
+payload to publish or an error. The C JSON response has the same `events` and
+optional `error` fields.
 SDS decides when a channel is due based on activity, the configured interval,
 pending repair requests, and randomized backoff. Tick does not transmit messages.
 Pending acknowledgement-summary payloads are generated within the sync interval

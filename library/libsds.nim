@@ -25,7 +25,7 @@ import ./json_responses
 import
   ./events/[
     json_message_ready_event, json_message_sent_event, json_missing_dependencies_event,
-    json_periodic_sync_event, json_repair_ready_event, json_message_expired_event,
+    json_repair_ready_event, json_message_expired_event,
   ]
 
 # Frees memory allocated by native callbacks with malloc. Must match that
@@ -79,10 +79,15 @@ var sdsPersistenceUserData {.threadvar.}: pointer
 ################################################################################
 ### JSON-marshalled request/response types
 
-type SdsConfig* {.ffi.} = object
-  participantId: string ## empty disables SDS-R (see newReliabilityManager)
-  persistenceEnabled: bool
-  syncMessageIntervalMs: int64 ## test-only override; zero uses the default
+when defined(sdsTest):
+  type SdsConfig* {.ffi.} = object
+    participantId: string
+    persistenceEnabled: bool
+    syncMessageIntervalMs: int64
+else:
+  type SdsConfig* {.ffi.} = object
+    participantId: string ## empty disables SDS-R (see newReliabilityManager)
+    persistenceEnabled: bool
 
 type SdsWrapRequest* {.ffi.} = object
   message: seq[byte]
@@ -251,9 +256,10 @@ proc sdsCreate*(
 
   let persistence = if config.persistenceEnabled: ffiPersistence() else: noOpPersistence()
   var reliabilityConfig = defaultConfig()
-  if config.syncMessageIntervalMs > 0:
-    reliabilityConfig.syncMessageInterval =
-      initDuration(milliseconds = config.syncMessageIntervalMs)
+  when defined(sdsTest):
+    if config.syncMessageIntervalMs > 0:
+      reliabilityConfig.syncMessageInterval =
+        initDuration(milliseconds = config.syncMessageIntervalMs)
 
   let rm = newReliabilityManager(
     participantId = config.participantId.SdsParticipantID,
@@ -286,10 +292,6 @@ proc sdsCreate*(
   ) {.gcsafe.} =
     dispatchFfiEvent("message_expired"):
       $JsonMessageExpiredEvent.new(messageId, channelId)
-
-  let periodicSyncCb: PeriodicSyncCallback = proc() {.gcsafe, raises: [].} =
-    dispatchFfiEvent("periodic_sync"):
-      $JsonPeriodicSyncEvent.new()
 
   let repairReadyCb = proc(message: seq[byte], channelId: SdsChannelID) {.gcsafe.} =
     dispatchFfiEvent("repair_ready"):
@@ -333,7 +335,7 @@ proc sdsCreate*(
       c_free(hint)
 
   await rm.setCallbacks(
-    messageReadyCb, messageSentCb, missingDependenciesCb, periodicSyncCb,
+    messageReadyCb, messageSentCb, missingDependenciesCb,
     retrievalHintProvider, repairReadyCb, messageExpiredCb, channelRetrievalHintProvider,
   )
 

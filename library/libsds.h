@@ -33,7 +33,6 @@ extern "C" {
 //   message_expired       {"eventType":"message_expired","messageId":"0xdeadbeef","channelId":"my-chat"}
 //   missing_dependencies  {"eventType":"missing_dependencies","messageId":"0xdeadbeef","channelId":"my-chat",
 //                          "missingDeps":[{"messageId":"0xaaa","retrievalHint":"aGludA=="}]}
-//   periodic_sync         {"eventType":"periodic_sync"}
 //   repair_ready          {"eventType":"repair_ready","message":[10,4,116,101,115,116],"channelId":"my-chat"}
 
 // sds_ensure_channel loads a channel for periodic monitoring. sds_tick returns
@@ -52,7 +51,7 @@ typedef void (*SdsRetrievalHintProvider)(const char* messageId, char** hint, siz
 int sds_set_retrieval_hint_provider(void* ctx, SdsRetrievalHintProvider callback, void* userData);
 
 // Channel-aware provider takes precedence over the legacy provider when set.
-typedef void (*SdsChannelRetrievalHintProvider)(const char* messageId, const uint8_t* channelId, size_t channelIdLen, char** hint, size_t* hintLen, void* userData);
+typedef void (*SdsChannelRetrievalHintProvider)(const char* messageId, const unsigned char* channelId, size_t channelIdLen, char** hint, size_t* hintLen, void* userData);
 int sds_set_channel_retrieval_hint_provider(void* ctx, SdsChannelRetrievalHintProvider callback, void* userData);
 
 typedef enum SdsPersistenceOperation {

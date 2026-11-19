@@ -29,14 +29,14 @@ suite "Persistence: write → restart → read-back":
     await first.cleanup()
 
     let second = newV2Manager(store)
-    check (await second.tick()).len == 0
+    check (await second.tick()).events.len == 0
     check (await second.ensureChannel(testChannel)).isOk()
-    check (await second.tick()).len == 0
+    check (await second.tick()).events.len == 0
     second.channels[testChannel].lastSyncActivity =
       getTime() - second.config.syncMessageInterval - initDuration(seconds = 1)
     second.channels[testChannel].syncJitterInitialized = true
     second.channels[testChannel].syncJitter = initDuration()
-    let events = await second.tick()
+    let events = (await second.tick()).events
     check events.len == 1
     let history = deserializeMessage(events[0].payload).get().causalHistory
     check:

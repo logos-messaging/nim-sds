@@ -1,9 +1,9 @@
 import std/[base64, json, options]
 import sds
 
-proc tickResponse*(events: seq[TickEvent]): string =
+proc tickResponse*(tick: TickResult): string =
   var node = newJArray()
-  for event in events:
+  for event in tick.events:
     var entry = newJObject()
     entry["channelId"] = %*event.channelId
     if event.error.isSome():
@@ -11,7 +11,11 @@ proc tickResponse*(events: seq[TickEvent]): string =
     else:
       entry["payload"] = %*encode(event.payload)
     node.add(entry)
-  $node
+  var response = newJObject()
+  response["events"] = node
+  if tick.error.isSome():
+    response["error"] = %*($tick.error.get())
+  return $response
 
 proc unwrapResponse*(
     message: Option[seq[byte]], missingDeps: seq[HistoryEntry], channelId: SdsChannelID

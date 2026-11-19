@@ -26,7 +26,7 @@ proc dueSync(rm: ReliabilityManager, channelId: SdsChannelID): Future[Result[seq
   channel.lastSyncSent = channel.lastSyncActivity
   channel.syncJitter = initDuration()
   channel.syncJitterInitialized = true
-  for event in await rm.tick():
+  for event in (await rm.tick()).events:
     if event.channelId == channelId:
       if event.error.isSome():
         return err(event.error.get())
@@ -63,19 +63,21 @@ suite "Core Operations":
       wrapped.isErr()
       wrapped.error == ReliabilityError.reInvalidArgument
       "" notin rm.channels
-      (await rm.tick()).len == 0
+      (await rm.tick()).events.len == 0
 
   asyncTest "FFI responses encode binary payloads and distinguish metadata":
     let data = @[byte(0), 1, 255]
-    let events = parseJson(tickResponse(@[
+    let response = parseJson(tickResponse(TickResult(events: @[
       TickEvent(channelId: testChannel, payload: data),
       TickEvent(channelId: "failed", error: some(ReliabilityError.reInvalidArgument)),
-    ]))
+    ], error: some(ReliabilityError.reInternalError))))
+    let events = response["events"]
     check:
       events[0]["channelId"].getStr() == testChannel
       events[0]["payload"].getStr() == encode(data)
       events[1].hasKey("error")
       not events[1].hasKey("payload")
+      response["error"].getStr() == $ReliabilityError.reInternalError
 
     let content = parseJson(unwrapResponse(some(data), @[], testChannel))
     let metadata = parseJson(unwrapResponse(none(seq[byte]), @[], testChannel))
@@ -87,7 +89,7 @@ suite "Core Operations":
   asyncTest "tick schedules each channel independently and suppresses active channels":
     let other = "other-channel"
     check (await rm.ensureChannel(other)).isOk()
-    check (await rm.tick()).len == 0
+    check (await rm.tick()).events.len == 0
     let past = getTime() - rm.config.syncMessageInterval - initDuration(seconds = 1)
     rm.channels[testChannel].lastSyncActivity = past
     rm.channels[other].lastSyncActivity = past
@@ -95,24 +97,47 @@ suite "Core Operations":
     rm.channels[testChannel].syncJitterInitialized = true
     check (await rm.wrapOutgoingMessage(@[byte(1)], "active", other)).isOk()
 
-    let events = await rm.tick()
+    let events = (await rm.tick()).events
     check events.len == 1
     check:
       events[0].channelId == testChannel
       events[0].error.isNone()
       deserializeMessage(events[0].payload).get().content.len == 0
-    check (await rm.tick()).len == 0
+    check (await rm.tick()).events.len == 0
 
   asyncTest "tick reports failures for each channel":
     let other = "other-channel"
     check (await rm.ensureChannel(other)).isOk()
     rm.config.syncMessageInterval = initDuration()
-    let events = await rm.tick()
+    let events = (await rm.tick()).events
     check events.len == 2
     for event in events:
       check:
         event.error == some(ReliabilityError.reInvalidArgument)
         event.payload.len == 0
+
+  asyncTest "concurrent ticks generate only one payload per due channel":
+    var persistence = noOpPersistence()
+    persistence.saveChannelMeta = proc(
+        channelId: SdsChannelID, meta: ChannelMeta
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.} =
+      await sleepAsync(chronos.milliseconds(5)).noCancel()
+      return ok()
+    let manager = newReliabilityManager(participantId = "alice", persistence = persistence).get()
+    check (await manager.ensureChannel(testChannel)).isOk()
+    let channel = manager.channels[testChannel]
+    channel.lastSyncActivity =
+      getTime() - manager.config.syncMessageInterval - initDuration(seconds = 1)
+    channel.syncJitterInitialized = true
+    channel.syncJitter = initDuration()
+    let first = manager.tick()
+    let second = manager.tick()
+    let firstResult = await first
+    let secondResult = await second
+    check firstResult.error.isNone()
+    check secondResult.error.isNone()
+    check firstResult.events.len + secondResult.events.len == 1
+    await manager.cleanup()
 
   asyncTest "incoming activity defers sync":
     let past = getTime() - rm.config.syncMessageInterval - initDuration(seconds = 1)
@@ -122,7 +147,7 @@ suite "Core Operations":
       channelId = testChannel, content = @[byte(1)], bloomFilter = @[],
     )
     check (await rm.unwrapReceivedMessage(serializeMessage(message).get())).isOk()
-    check (await rm.tick()).len == 0
+    check (await rm.tick()).events.len == 0
 
   asyncTest "busy receive-only channels publish pending acknowledgement summaries":
     let sender = newReliabilityManager(participantId = "bob").get()
@@ -132,22 +157,41 @@ suite "Core Operations":
     for i in 0 ..< 3:
       let wrapped = await sender.wrapOutgoingMessage(@[byte(1)], "busy-" & $i, testChannel)
       check (await rm.unwrapReceivedMessage(wrapped.get())).isOk()
-      check (await rm.tick()).len == 0
+      check (await rm.tick()).events.len == 0
     channel.lastSyncSent =
       getTime() - rm.config.syncMessageInterval - initDuration(seconds = 6)
-    let events = await rm.tick()
+    let events = (await rm.tick()).events
     check events.len == 1
     check (await sender.unwrapReceivedMessage(events[0].payload)).isOk()
     check sender.channels[testChannel].outgoingBuffer.len == 0
     check not channel.syncSummaryPending
-    check (await rm.tick()).len == 0
+    check (await rm.tick()).events.len == 0
 
     let wrapped = await sender.wrapOutgoingMessage(@[byte(2)], "busy-next", testChannel)
     check (await rm.unwrapReceivedMessage(wrapped.get())).isOk()
-    check (await rm.wrapOutgoingMessage(@[byte(3)], "summary-carrier", testChannel)).isOk()
+    let carrier = await rm.wrapOutgoingMessage(@[byte(3)], "summary-carrier", testChannel)
+    check carrier.isOk()
+    check not channel.syncSummaryPending
+    check channel.outgoingBuffer.len == 1
+    channel.syncJitter = initDuration(seconds = 10)
+    channel.lastSyncSent = getTime() - rm.config.syncMessageInterval
+    check (await rm.tick()).events.len == 0
     channel.lastSyncSent =
-      getTime() - rm.config.syncMessageInterval - initDuration(seconds = 6)
-    check (await rm.tick()).len == 0
+      getTime() - rm.config.syncMessageInterval - initDuration(seconds = 11)
+    let outgoingSync = await rm.tick()
+    check outgoingSync.error.isNone()
+    check outgoingSync.events.len == 1
+
+    check (await sender.unwrapReceivedMessage(carrier.get())).isOk()
+    let acknowledgement = await sender.dueSync(testChannel)
+    check acknowledgement.isOk()
+    check (await rm.unwrapReceivedMessage(acknowledgement.get())).isOk()
+    check channel.outgoingBuffer.len == 0
+    check not channel.syncSummaryPending
+    channel.lastSyncSent =
+      getTime() - rm.config.syncMessageInterval - initDuration(seconds = 11)
+    channel.syncJitter = initDuration()
+    check (await rm.tick()).events.len == 0
     await sender.cleanup()
 
   asyncTest "summary changes during sync persistence remain pending":
@@ -183,19 +227,42 @@ suite "Core Operations":
     channel.syncJitterInitialized = true
     channel.syncJitter = initDuration()
 
-    let first = (await manager.tick())[0]
+    let first = (await manager.tick()).events[0]
     check first.error.isNone()
     check channel.syncSummaryPending
     channel.lastSyncActivity = getTime()
     channel.lastSyncSent =
       getTime() - manager.config.syncMessageInterval - initDuration(seconds = 1)
     channel.syncJitter = initDuration()
-    let second = (await manager.tick())[0]
+    let second = (await manager.tick()).events[0]
     check second.error.isNone()
     let summary = deserializeMessage(second.payload).get()
     check summary.bloomFilter == serializeBloomFilter(channel.bloomFilter.filter).get()
     check not channel.syncSummaryPending
     await manager.cleanup()
+
+  asyncTest "duplicate retransmissions rearm lost acknowledgement summaries":
+    let sender = newReliabilityManager(participantId = "bob").get()
+    let wrapped = (await sender.wrapOutgoingMessage(@[byte(1)], "retry", testChannel)).get()
+    check (await rm.unwrapReceivedMessage(wrapped)).isOk()
+    let channel = rm.channels[testChannel]
+    discard await rm.dueSync(testChannel) # The first summary is lost.
+    check not channel.syncSummaryPending
+    for i in 0 ..< 2:
+      check (await rm.unwrapReceivedMessage(wrapped)).isOk()
+      check channel.syncSummaryPending
+      channel.lastSyncSent =
+        getTime() - rm.config.syncMessageInterval - initDuration(seconds = 1)
+      channel.syncJitterInitialized = true
+      channel.syncJitter = initDuration()
+      let tick = await rm.tick()
+      check tick.error.isNone()
+      check tick.events.len == 1
+      if i == 1:
+        check (await sender.unwrapReceivedMessage(tick.events[0].payload)).isOk()
+      check not channel.syncSummaryPending
+    check sender.channels[testChannel].outgoingBuffer.len == 0
+    await sender.cleanup()
 
   asyncTest "due repair requests bypass quiet backoff but not send interval":
     let channel = rm.channels[testChannel]
@@ -207,11 +274,11 @@ suite "Core Operations":
       outHistEntry: HistoryEntry(messageId: "missing"),
       minTimeRepairReq: getTime() - initDuration(seconds = 1),
     )
-    let events = await rm.tick()
+    let events = (await rm.tick()).events
     check events.len == 1
     check deserializeMessage(events[0].payload).get().repairRequest[0].messageId == "missing"
     check "missing" in channel.outgoingRepairBuffer
-    check (await rm.tick()).len == 0
+    check (await rm.tick()).events.len == 0
 
   asyncTest "sync repair retries rotate without extending expiry deadlines":
     let channel = rm.channels[testChannel]
@@ -252,7 +319,7 @@ suite "Core Operations":
       rm.channels[channelId].lastSyncActivity = past
       rm.channels[channelId].syncJitter = initDuration()
       rm.channels[channelId].syncJitterInitialized = true
-    let events = await rm.tick()
+    let events = (await rm.tick()).events
     check events.len == 2
     for event in events:
       check event.error.isNone()
@@ -306,6 +373,7 @@ suite "Core Operations":
       channelId == testChannel
 
   asyncTest "sync wrapping includes channel metadata without adding content state":
+    let before = getTime().toUnix
     let content = await rm.wrapOutgoingMessage(@[byte(1), 2], "content-1", testChannel)
     check content.isOk()
     let contentMessage = deserializeMessage(content.get()).get()
@@ -323,7 +391,8 @@ suite "Core Operations":
       sync.messageId == "sds-periodic-sync"
       sync.channelId == testChannel
       sync.content.len == 0
-      sync.lamportTimestamp > 1_000_000_000_000'i64
+      sync.lamportTimestamp >= before
+      sync.lamportTimestamp <= getTime().toUnix + 2
       sync.lamportTimestamp > contentMessage.lamportTimestamp
       sync.causalHistory.len == 1
       sync.causalHistory[0].messageId == "content-1"
@@ -899,7 +968,6 @@ suite "Reliability Mechanisms":
           channelId: SdsChannelID,
       ) {.gcsafe.} =
         missingDepsCount += 1,
-      nil,
       proc(messageId: SdsMessageID): seq[byte] =
         return cast[seq[byte]]("hint:" & messageId),
     )
@@ -1166,29 +1234,6 @@ suite "Periodic Tasks & Buffer Management":
     check:
       (await rm.getOutgoingBuffer(testChannel)).len == 0
       messageSentCount == 0
-
-  asyncTest "periodic sync callback":
-    var syncCallCount = 0
-    await rm.setCallbacks(
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
-        discard,
-      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
-        discard,
-      proc(
-          messageId: SdsMessageID,
-          missingDeps: seq[HistoryEntry],
-          channelId: SdsChannelID,
-      ) {.gcsafe.} =
-        discard,
-      proc() {.gcsafe.} =
-        syncCallCount += 1,
-    )
-
-    rm.startPeriodicTasks()
-    await sleepAsync(chronos.seconds(1))
-    await rm.cleanup()
-
-    check syncCallCount > 0
 
 # Special cases handling
 suite "Special Cases Handling":

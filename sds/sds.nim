@@ -11,9 +11,14 @@ type TickEvent* = object
   payload*: seq[byte]
   error*: Option[ReliabilityError]
 
+type TickResult* = object
+  events*: seq[TickEvent]
+  error*: Option[ReliabilityError]
+
 proc randomSyncJitter(interval: times.Duration): Result[times.Duration, ReliabilityError] =
   var randomBytes: array[8, byte]
   if not urandom(randomBytes):
+    error "Failed to generate sync jitter"
     return err(ReliabilityError.reInternalError)
   var randomValue: uint64
   for b in randomBytes:
@@ -106,16 +111,17 @@ proc wrapMessage(
     message: seq[byte],
     messageId: SdsMessageID,
     channelId: SdsChannelID,
-    isSync: bool,
+    lockHeld: bool = false,
 ): Future[Result[seq[byte], ReliabilityError]] {.async: (raises: []), gcsafe.} =
   ## Wraps an outgoing message with reliability metadata.
-  if message.len == 0 and not isSync:
-    return err(ReliabilityError.reInvalidArgument)
+  ## `lockHeld` is set only by tick, which holds the lock across scheduling.
+  let isSync = message.len == 0
   if message.len > MaxMessageSize:
     return err(ReliabilityError.reMessageTooLarge)
 
   try:
-    await rm.lock.acquire()
+    if not lockHeld:
+      await rm.lock.acquire()
     try:
       try:
         if isSync and channelId notin rm.channels:
@@ -123,29 +129,8 @@ proc wrapMessage(
         let channel = (await rm.getOrCreateChannel(channelId)).valueOr:
           return err(error)
         let now = getTime()
-        var jitter = initDuration()
-        if isSync:
-          if rm.config.syncMessageInterval <= initDuration():
-            return err(ReliabilityError.reInvalidArgument)
-          let interval = rm.config.syncMessageInterval
-          if not channel.syncJitterInitialized:
-            channel.syncJitter = randomSyncJitter(interval).valueOr:
-              return err(error)
-            channel.syncJitterInitialized = true
-          var dueRepair = false
-          for _, entry in channel.outgoingRepairBuffer:
-            if now >= entry.minTimeRepairReq:
-              dueRepair = true
-              break
-          if now < channel.lastSyncActivity + interval + channel.syncJitter and
-              not (dueRepair and now >= channel.lastSyncSent + interval) and
-              not (channel.syncSummaryPending and
-                now >= channel.lastSyncSent + interval + channel.syncJitter):
-            return ok(newSeq[byte]())
-          jitter = randomSyncJitter(interval).valueOr:
-            return err(error)
         (await rm.updateLamportTimestamp(
-          int64(now.toUnixFloat * 1000.0), channelId
+          now.toUnix, channelId
         )).isOkOr:
           return err(error)
 
@@ -237,15 +222,14 @@ proc wrapMessage(
           channel.syncSummaryPending = false
         channel.lastSyncActivity = now
         channel.lastSyncSent = now
-        if isSync:
-          channel.syncJitter = jitter
         return ok(serialized)
       except CatchableError:
         error "Failed to wrap message",
           channelId = channelId, msg = getCurrentExceptionMsg()
         return err(ReliabilityError.reSerializationError)
     finally:
-      rm.lock.release()
+      if not lockHeld:
+        rm.lock.release()
   except CatchableError:
     error "Failed to wrap message (lock)",
       channelId = channelId, msg = getCurrentExceptionMsg()
@@ -257,15 +241,18 @@ proc wrapOutgoingMessage*(
     messageId: SdsMessageID,
     channelId: SdsChannelID,
 ): Future[Result[seq[byte], ReliabilityError]] {.async: (raises: []), gcsafe.} =
-  return await wrapMessage(rm, message, messageId, channelId, isSync=false)
+  if message.len == 0:
+    return err(ReliabilityError.reInvalidArgument)
+  return await wrapMessage(rm, message, messageId, channelId)
 
-proc tick*(rm: ReliabilityManager): Future[seq[TickEvent]] {.
+proc tick*(rm: ReliabilityManager): Future[TickResult] {.
     async: (raises: []), gcsafe
 .} =
   ## Generate due sync payloads for loaded channels. Each error is returned
   ## alongside its channel so successful payloads are never lost.
-  var channelIds: seq[SdsChannelID]
+  var events: seq[TickEvent]
   try:
+    var channelIds: seq[SdsChannelID]
     await rm.lock.acquire()
     try:
       for channelId in rm.channels.keys:
@@ -273,14 +260,49 @@ proc tick*(rm: ReliabilityManager): Future[seq[TickEvent]] {.
     finally:
       rm.lock.release()
     for channelId in channelIds:
-      let generated = await wrapMessage(rm, @[], periodicSyncMessageID, channelId, isSync=true)
-      if generated.isErr():
-        result.add(TickEvent(channelId: channelId, error: some(generated.error)))
-      elif generated.value.len > 0:
-        result.add(TickEvent(channelId: channelId, payload: generated.value))
+      await rm.lock.acquire()
+      try:
+        if channelId notin rm.channels:
+          continue
+        let channel = rm.channels[channelId]
+        let interval = rm.config.syncMessageInterval
+        if interval <= initDuration():
+          events.add(TickEvent(channelId: channelId, error: some(ReliabilityError.reInvalidArgument)))
+          continue
+        if not channel.syncJitterInitialized:
+          let jitter = randomSyncJitter(interval)
+          if jitter.isErr():
+            events.add(TickEvent(channelId: channelId, error: some(jitter.error)))
+            continue
+          channel.syncJitter = jitter.get()
+          channel.syncJitterInitialized = true
+        let now = getTime()
+        var dueRepair = false
+        for _, entry in channel.outgoingRepairBuffer:
+          if now >= entry.minTimeRepairReq:
+            dueRepair = true
+            break
+        if now < channel.lastSyncActivity + interval + channel.syncJitter and
+            not (dueRepair and now >= channel.lastSyncSent + interval) and
+            not ((channel.syncSummaryPending or channel.outgoingBuffer.len > 0) and
+              now >= channel.lastSyncSent + interval + channel.syncJitter):
+          continue
+        let jitter = randomSyncJitter(interval)
+        if jitter.isErr():
+          events.add(TickEvent(channelId: channelId, error: some(jitter.error)))
+          continue
+        let generated = await wrapMessage(rm, @[], periodicSyncMessageID, channelId, lockHeld = true)
+        if generated.isErr():
+          events.add(TickEvent(channelId: channelId, error: some(generated.error)))
+        elif generated.value.len > 0:
+          channel.syncJitter = jitter.get()
+          events.add(TickEvent(channelId: channelId, payload: generated.value))
+      finally:
+        rm.lock.release()
   except CatchableError:
     error "Failed to tick SDS channels", msg = getCurrentExceptionMsg()
-    result.add(TickEvent(error: some(ReliabilityError.reInternalError)))
+    return TickResult(events: events, error: some(ReliabilityError.reInternalError))
+  return TickResult(events: events)
 
 proc processIncomingBuffer(
     rm: ReliabilityManager, channelId: SdsChannelID
@@ -343,6 +365,20 @@ proc processIncomingBuffer(
       channelId = channelId, msg = getCurrentExceptionMsg()
     err(ReliabilityError.reInternalError)
 
+proc queueMissingRepairs(
+    rm: ReliabilityManager, channel: ChannelContext,
+    missingDeps: seq[HistoryEntry], now: Time,
+) =
+  if rm.participantId.len == 0:
+    return
+  for dep in missingDeps:
+    if dep.messageId notin channel.outgoingRepairBuffer:
+      let delay = computeTReq(
+        rm.participantId, dep.messageId, rm.config.repairTMin, rm.config.repairTMax,
+      )
+      channel.outgoingRepairBuffer[dep.messageId] =
+        OutgoingRepairEntry(outHistEntry: dep, minTimeRepairReq: now + delay)
+
 proc unwrapReceivedMessage*(
     rm: ReliabilityManager, message: seq[byte]
 ): Future[
@@ -379,6 +415,7 @@ proc unwrapReceivedMessage*(
       channel.incomingRepairBuffer.del(msg.messageId)
 
     if not isSync and msg.messageId in channel.messageHistory:
+      channel.markSyncSummaryChanged()
       # Duplicate: no history change. Still flush the meta (repair-buffer
       # dels above are mutations) and the history queue (any pending
       # entries from a prior failed write get retried here too).
@@ -438,16 +475,7 @@ proc unwrapReceivedMessage*(
 
         # A sync is never buffered, but its missing content dependencies
         # still need to be fetched and may be requested through SDS-R.
-        if rm.participantId.len > 0:
-          for dep in missingDeps:
-            if dep.messageId notin channel.outgoingRepairBuffer:
-              let tReq = computeTReq(
-                rm.participantId, dep.messageId, rm.config.repairTMin,
-                rm.config.repairTMax,
-              )
-              let outEntry =
-                OutgoingRepairEntry(outHistEntry: dep, minTimeRepairReq: now + tReq)
-              channel.outgoingRepairBuffer[dep.messageId] = outEntry
+        rm.queueMissingRepairs(channel, missingDeps, now)
     elif missingDeps.len == 0:
       var depsInBuffer = false
       for msgId, entry in channel.incomingBuffer.pairs():
@@ -485,17 +513,7 @@ proc unwrapReceivedMessage*(
           rm.onMissingDependencies(msg.messageId, missingDeps, channelId)
 
       # SDS-R: add missing deps to outgoing repair buffer
-      if rm.participantId.len > 0:
-        for dep in missingDeps:
-          if dep.messageId notin channel.outgoingRepairBuffer:
-            let tReq = computeTReq(
-              rm.participantId, dep.messageId, rm.config.repairTMin,
-              rm.config.repairTMax,
-            )
-            let outEntry =
-              OutgoingRepairEntry(outHistEntry: dep, minTimeRepairReq: now + tReq)
-            # Phase 2B: in-memory insert only; op-end trySaveMeta covers it.
-            channel.outgoingRepairBuffer[dep.messageId] = outEntry
+      rm.queueMissingRepairs(channel, missingDeps, now)
 
     # Op end: one meta snapshot + one history flush, paired under the
     # lock. The flush is the single point where any cascade-driven
@@ -554,7 +572,6 @@ proc setCallbacks*(
     onMessageReady: MessageReadyCallback,
     onMessageSent: MessageSentCallback,
     onMissingDependencies: MissingDependenciesCallback,
-    onPeriodicSync: PeriodicSyncCallback = nil,
     onRetrievalHint: RetrievalHintProvider = nil,
     onRepairReady: RepairReadyCallback = nil,
     onMessageExpired: MessageExpiredCallback = nil,
@@ -567,7 +584,6 @@ proc setCallbacks*(
       rm.onMessageReady = onMessageReady
       rm.onMessageSent = onMessageSent
       rm.onMissingDependencies = onMissingDependencies
-      rm.onPeriodicSync = onPeriodicSync
       rm.onRetrievalHint = onRetrievalHint
       rm.onChannelRetrievalHint = onChannelRetrievalHint
       rm.onRepairReady = onRepairReady
@@ -650,16 +666,6 @@ proc periodicBufferSweep(rm: ReliabilityManager) {.async: (raises: [CancelledErr
     discard await rm.runBufferSweep()
     await sleepAsync(chronos.milliseconds(rm.config.bufferSweepInterval.inMilliseconds))
 
-proc periodicSyncMessage(rm: ReliabilityManager) {.async: (raises: [CancelledError]).} =
-  while true:
-    try:
-      if not rm.onPeriodicSync.isNil():
-        {.cast(raises: []).}:
-          rm.onPeriodicSync()
-    except CatchableError:
-      error "Error in periodic sync", msg = getCurrentExceptionMsg()
-    await sleepAsync(chronos.seconds(rm.config.syncMessageInterval.inSeconds))
-
 proc runRepairSweep*(
     rm: ReliabilityManager
 ): Future[Result[void, ReliabilityError]] {.async: (raises: []).} =
@@ -733,12 +739,11 @@ proc periodicRepairSweep(rm: ReliabilityManager) {.async: (raises: [CancelledErr
     await sleepAsync(chronos.milliseconds(rm.config.repairSweepInterval.inMilliseconds))
 
 proc startPeriodicTasks*(rm: ReliabilityManager) =
-  ## Starts the periodic background tasks (buffer sweep, sync message,
-  ## SDS-R repair sweep). The futures are kept on the manager so `cleanup`
+  ## Starts the periodic background tasks (buffer sweep and SDS-R repair
+  ## sweep). The futures are kept on the manager so `cleanup`
   ## can cancel them — without that, the loops would outlive a cleaned-up
   ## manager and keep firing against cleared state.
   rm.periodicTasks.add(FutureBase(rm.periodicBufferSweep()))
-  rm.periodicTasks.add(FutureBase(rm.periodicSyncMessage()))
   rm.periodicTasks.add(FutureBase(rm.periodicRepairSweep()))
 
 proc resetReliabilityManager*(

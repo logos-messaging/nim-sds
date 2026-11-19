@@ -30,7 +30,6 @@ type ReliabilityManager* = ref object
   onMissingDependencies*: proc(
     messageId: SdsMessageID, missingDeps: seq[HistoryEntry], channelId: SdsChannelID
   ) {.gcsafe.}
-  onPeriodicSync*: PeriodicSyncCallback
   onRetrievalHint*: RetrievalHintProvider
   onChannelRetrievalHint*: ChannelRetrievalHintProvider
   onRepairReady*: RepairReadyCallback
