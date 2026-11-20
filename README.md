@@ -24,6 +24,9 @@ payload to publish or an error. The C JSON response has the same `events` and
 optional `error` fields.
 SDS decides when a channel is due based on activity, the configured interval,
 pending repair requests, and randomized backoff. Tick does not transmit messages.
+The default sync interval is 30 seconds; C FFI clients can set
+`SdsConfig.syncMessageIntervalMs` to a positive millisecond value, or leave it
+zero to use the default. Negative values are rejected.
 Pending acknowledgement-summary payloads are generated within the sync interval
 plus jitter (on the next tick), even while incoming traffic keeps the channel busy.
 Call `ensureChannel` for channels to monitor, including after restart; persistence

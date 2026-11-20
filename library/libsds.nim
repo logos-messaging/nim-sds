@@ -79,15 +79,10 @@ var sdsPersistenceUserData {.threadvar.}: pointer
 ################################################################################
 ### JSON-marshalled request/response types
 
-when defined(sdsTest):
-  type SdsConfig* {.ffi.} = object
-    participantId: string
-    persistenceEnabled: bool
-    syncMessageIntervalMs: int64
-else:
-  type SdsConfig* {.ffi.} = object
-    participantId: string ## empty disables SDS-R (see newReliabilityManager)
-    persistenceEnabled: bool
+type SdsConfig* {.ffi.} = object
+  participantId: string ## empty disables SDS-R (see newReliabilityManager)
+  persistenceEnabled: bool
+  syncMessageIntervalMs: int64 ## zero uses the default
 
 type SdsWrapRequest* {.ffi.} = object
   message: seq[byte]
@@ -256,10 +251,11 @@ proc sdsCreate*(
 
   let persistence = if config.persistenceEnabled: ffiPersistence() else: noOpPersistence()
   var reliabilityConfig = defaultConfig()
-  when defined(sdsTest):
-    if config.syncMessageIntervalMs > 0:
-      reliabilityConfig.syncMessageInterval =
-        initDuration(milliseconds = config.syncMessageIntervalMs)
+  if config.syncMessageIntervalMs < 0:
+    return err("syncMessageIntervalMs must not be negative")
+  if config.syncMessageIntervalMs > 0:
+    reliabilityConfig.syncMessageInterval =
+      initDuration(milliseconds = config.syncMessageIntervalMs)
 
   let rm = newReliabilityManager(
     participantId = config.participantId.SdsParticipantID,
