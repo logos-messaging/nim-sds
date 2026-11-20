@@ -6,15 +6,14 @@
 ## Exported C names are snake_case (`sds_wrap_outgoing_message`, …); see
 ## `library/libsds.h`.
 ##
-## The exceptions are `sds_set_retrieval_hint_provider` and
-## `sds_set_persistence_callback`: they take C function pointers, which have no
-## sensible JSON representation, so they are hand-written and dispatched to the
-## worker thread.
+## The callback setters, including `sds_set_authorizer`, are hand-written and
+## dispatched to the worker thread because C function pointers cannot be
+## serialized in requests.
 
 when not compileOption("threads"):
   {.error: "libsds needs --threads:on".}
 
-import std/[base64, json, options, times]
+import std/[base64, json, locks, options, times]
 import ffi
 import sds
 import sds/types/persistence
@@ -22,6 +21,7 @@ import sds/protobuf as wire
 import sds/snapshot_codec
 import stew/byteutils
 import ./json_responses
+import ./authorizer_set_wait
 import
   ./events/[
     json_message_ready_event, json_message_sent_event, json_missing_dependencies_event,
@@ -58,6 +58,19 @@ type SdsPersistenceCallback* = proc(
   responseLen: ptr csize_t,
   userData: pointer,
 ) : cint {.cdecl, gcsafe, raises: [].}
+
+const
+  SdsAuthorizationAccept* = 0.cint
+  SdsAuthorizationReject* = 1.cint
+  SdsAuthorizationError* = 2.cint
+
+type SdsAuthorizerCallback* = proc(
+  channelId: ptr byte, channelIdLen: csize_t,
+  content: ptr byte, contentLen: csize_t,
+  senderId: ptr byte, senderIdLen: csize_t,
+  authorizationContext: ptr byte, authorizationContextLen: csize_t,
+  userData: pointer,
+): cint {.cdecl, gcsafe, raises: [].}
 
 type PersistenceOperation = enum
   SaveChannelMeta = 1
@@ -97,6 +110,7 @@ type SdsWrapResponse* {.ffi.} = object
 
 type SdsUnwrapRequest* {.ffi.} = object
   message: seq[byte]
+  authorizationContext: seq[byte] ## Opaque host context; not part of the wire message.
 
 type SdsMarkDependenciesRequest* {.ffi.} = object
   messageIds: seq[string]
@@ -248,7 +262,6 @@ proc sdsCreate*(
   sdsChannelRetrievalHintUserData = nil
   sdsPersistenceCb = nil
   sdsPersistenceUserData = nil
-
   let persistence = if config.persistenceEnabled: ffiPersistence() else: noOpPersistence()
   var reliabilityConfig = defaultConfig()
   if config.syncMessageIntervalMs < 0:
@@ -367,7 +380,7 @@ proc sdsUnwrapReceivedMessage*(
   # object serializer cannot emit, so the JSON is built by hand and returned as
   # a string. Shape matches the legacy unwrap response.
   let (unwrapped, missingDeps, channelId) = (
-    await unwrapReceivedMessage(rm, req.message)
+    await unwrapReceivedMessage(rm, req.message, req.authorizationContext)
   ).valueOr:
     return err("error processing unwrap request: " & $error)
 
@@ -406,6 +419,7 @@ proc sdsDestroy*(rm: ReliabilityManager) {.ffiDtor.} =
   sdsChannelRetrievalHintUserData = nil
   sdsPersistenceCb = nil
   sdsPersistenceUserData = nil
+  rm.authorizer = Authorizer()
 
 ################################################################################
 ### Retrieval-hint provider (hand-written: a C function pointer cannot be passed
@@ -505,6 +519,80 @@ proc sds_set_persistence_callback(
   if sendRes.isErr():
     return RET_ERR
   return RET_OK
+
+registerReqFFI(SdsSetAuthorizerReq, ctx: ptr FFIContext[ReliabilityManager]):
+  proc(cbAddr: uint64, udAddr: uint64): Future[Result[string, string]] {.async.} =
+    var authorizer: Authorizer
+    if cbAddr != 0:
+      let callback = cast[SdsAuthorizerCallback](cast[pointer](cbAddr))
+      let userData = cast[pointer](udAddr)
+      authorizer.authorize = proc(
+          message: SdsMessage, authorizationContext: seq[byte]
+      ): Result[bool, string] {.gcsafe, raises: [].} =
+        let senderId = string(message.senderId)
+        var channelIdPtr, contentPtr, senderIdPtr, contextPtr: ptr byte
+        if message.channelId.len > 0:
+          channelIdPtr = cast[ptr byte](unsafeAddr message.channelId[0])
+        if message.content.len > 0:
+          contentPtr = unsafeAddr message.content[0]
+        if senderId.len > 0:
+          senderIdPtr = cast[ptr byte](unsafeAddr senderId[0])
+        if authorizationContext.len > 0:
+          contextPtr = unsafeAddr authorizationContext[0]
+        let status = callback(
+          channelIdPtr, csize_t(message.channelId.len),
+          contentPtr, csize_t(message.content.len),
+          senderIdPtr, csize_t(senderId.len),
+          contextPtr, csize_t(authorizationContext.len), userData,
+        )
+        case status
+        of SdsAuthorizationAccept: return ok(true)
+        of SdsAuthorizationReject: return ok(false)
+        else: return err("SDS authorizer callback failed: " & $status)
+
+    let manager = ctx[].myLib[]
+    if manager.isNil():
+      return err("SDS context has no reliability manager")
+    (await manager.setAuthorizer(authorizer)).isOkOr:
+      return err("failed to set SDS authorizer: " & $error)
+    return ok("")
+
+proc sds_set_authorizer(
+    ctxToken: FFICtxToken, callback: SdsAuthorizerCallback, userData: pointer
+): cint {.dynlib, exportc, cdecl, raises: [].} =
+  initializeLibrary()
+  let ctx = ReliabilityManagerFFIPool.resolveCtx(ctxToken)
+  if ctx.isNil():
+    return RET_ERR
+
+  var state: AuthorizerSetWait
+  initLock(state.lock)
+  initCond(state.cond)
+  defer:
+    deinitCond(state.cond)
+    deinitLock(state.lock)
+
+  let sendRes =
+    try:
+      ffi_context.sendRequestToFFIThread(
+        ctx,
+        SdsSetAuthorizerReq.ffiNewReq(
+          authorizerSetComplete, addr state,
+          cast[uint64](callback), cast[uint64](userData)
+        ),
+        ctxToken.tokenGeneration(),
+      )
+    except Exception as exc:
+      Result[void, string].err("sendRequestToFFIThread exception: " & exc.msg)
+  if sendRes.isErr():
+    return RET_ERR
+
+  acquire(state.lock)
+  while not state.completed:
+    wait(state.cond, state.lock)
+  let ret = state.result
+  release(state.lock)
+  return ret
 
 # Emit binding metadata (no-op unless -d:ffiGenBindings). Must follow every
 # {.ffi.}/{.ffiCtor.}/{.ffiDtor.} annotation.

@@ -1235,6 +1235,237 @@ suite "Periodic Tasks & Buffer Management":
       (await rm.getOutgoingBuffer(testChannel)).len == 0
       messageSentCount == 0
 
+suite "Incoming Message Authorization":
+  asyncTest "authorizer receives decoded content before channel loading":
+    var loads = 0
+    var persistence = noOpPersistence()
+    persistence.loadChannel = proc(
+        channelId: SdsChannelID
+    ): Future[Result[ChannelData, string]] {.async: (raises: []), gcsafe.} =
+      inc loads
+      return ok(ChannelData.init())
+    let manager = newReliabilityManager("alice", persistence = persistence).get()
+    defer: await manager.cleanup()
+    let message = SdsMessage.init(
+      messageId = "rejected", lamportTimestamp = 99,
+      causalHistory = @[HistoryEntry.init("fake-dependency")],
+      channelId = "new-channel", content = @[byte(0), 255],
+      bloomFilter = @[], senderId = "bob",
+    )
+    let authorizationContext = @[byte(3), byte(4)]
+    var calls = 0
+    let authorizer = Authorizer(
+      authorize: proc(
+          decoded: SdsMessage, context: seq[byte]
+      ): Result[bool, string] {.
+          gcsafe, raises: []
+      .} =
+        inc calls
+        if decoded != message or context != authorizationContext or
+            manager.channels.len != 0 or loads != 0:
+          return err("unexpected decoded message or premature channel load")
+        return ok(false)
+    )
+    check (await manager.setAuthorizer(authorizer)).isOk()
+    let received = await manager.unwrapReceivedMessage(
+      serializeMessage(message).get(), authorizationContext
+    )
+    check:
+      received.isErr()
+      received.error == ReliabilityError.reMessageRejected
+      calls == 1
+      loads == 0
+      manager.channels.len == 0
+      (await manager.tick()).events.len == 0
+
+  asyncTest "rejected metadata cannot change existing state or emit events":
+    var persistenceCalls = 0
+    var persistence = noOpPersistence()
+    persistence.saveChannelMeta = proc(
+        channelId: SdsChannelID, meta: ChannelMeta
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.} =
+      inc persistenceCalls
+      return ok()
+    persistence.updateHistory = proc(
+        channelId: SdsChannelID, update: HistoryUpdate
+    ): Future[Result[void, string]] {.async: (raises: []), gcsafe.} =
+      inc persistenceCalls
+      return ok()
+    let manager = newReliabilityManager("alice", persistence = persistence).get()
+    defer: await manager.cleanup()
+    check (await manager.wrapOutgoingMessage(
+      @[byte(1)], "pending-ack", testChannel
+    )).isOk()
+    let channel = manager.channels[testChannel]
+    let forgedBloom = serializeBloomFilter(channel.bloomFilter.filter).get()
+    let dependency = HistoryEntry.init("fake-dependency", senderId = "bob")
+    channel.outgoingRepairBuffer["attacker-message"] = OutgoingRepairEntry(
+      outHistEntry: dependency, minTimeRepairReq: getTime()
+    )
+    channel.incomingRepairBuffer["attacker-message"] = IncomingRepairEntry(
+      inHistEntry: dependency, cachedMessage: @[byte(1)], minTimeRepairResp: getTime()
+    )
+    var events = 0
+    await manager.setCallbacks(
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        events += 1,
+      proc(messageId: SdsMessageID, channelId: SdsChannelID) {.gcsafe.} =
+        events += 1,
+      proc(
+          messageId: SdsMessageID, missingDeps: seq[HistoryEntry],
+          channelId: SdsChannelID
+      ) {.gcsafe.} =
+        events += 1,
+    )
+    let before = $channel[]
+    let callsBefore = persistenceCalls
+    var authorizerCalls = 0
+    let authorizer = Authorizer(
+      authorize: proc(message: SdsMessage, context: seq[byte]): Result[bool, string] {.
+          gcsafe, raises: []
+      .} =
+        inc authorizerCalls
+        return ok(false)
+    )
+    check (await manager.setAuthorizer(authorizer)).isOk()
+    # Include duplicate and self-sync paths, which otherwise return early.
+    for variant in ["content", "duplicate", "sync", "self-sync"]:
+      let message = SdsMessage.init(
+        messageId = if variant == "duplicate": "pending-ack" else: "attacker-message",
+        lamportTimestamp = high(int64) - 1,
+        causalHistory = @[dependency], channelId = testChannel,
+        content = if variant in ["sync", "self-sync"]: @[] else: @[byte(2)],
+        bloomFilter = forgedBloom,
+        senderId = if variant == "self-sync": "alice" else: "bob",
+        repairRequest = @[HistoryEntry.init("pending-ack", senderId = "alice")],
+      )
+      let received = await manager.unwrapReceivedMessage(serializeMessage(message).get())
+      check:
+        received.isErr()
+        received.error == ReliabilityError.reMessageRejected
+        $channel[] == before
+        serializeBloomFilter(channel.bloomFilter.filter).get() == forgedBloom
+        persistenceCalls == callsBefore
+        events == 0
+    check authorizerCalls == 4
+
+  asyncTest "authorization errors are distinct and do not process metadata":
+    let manager = newReliabilityManager("alice").get()
+    defer: await manager.cleanup()
+    check (await manager.wrapOutgoingMessage(
+      @[byte(1)], "pending", testChannel
+    )).isOk()
+    let before = $manager.channels[testChannel][]
+    let message = SdsMessage.init(
+      messageId = "failed-authorization", lamportTimestamp = high(int64) - 1,
+      causalHistory = @[HistoryEntry.init("pending")],
+      channelId = testChannel, content = @[byte(2)], bloomFilter = @[],
+    )
+    let authorizer = Authorizer(
+      authorize: proc(message: SdsMessage, context: seq[byte]): Result[bool, string] {.
+          gcsafe, raises: []
+      .} =
+        return err("authorization service unavailable")
+    )
+    check (await manager.setAuthorizer(authorizer)).isOk()
+    let received = await manager.unwrapReceivedMessage(serializeMessage(message).get())
+    check:
+      received.isErr()
+      received.error == ReliabilityError.reAuthorizationError
+      $manager.channels[testChannel][] == before
+
+  asyncTest "accepted messages retain acknowledgement and dependency processing":
+    let manager = newReliabilityManager("alice").get()
+    defer: await manager.cleanup()
+    check (await manager.wrapOutgoingMessage(
+      @[byte(1)], "pending", testChannel
+    )).isOk()
+    let channel = manager.channels[testChannel]
+    let message = SdsMessage.init(
+      messageId = "accepted", lamportTimestamp = 1,
+      causalHistory = @[HistoryEntry.init("missing", senderId = "bob")],
+      channelId = testChannel, content = @[byte(2)],
+      bloomFilter = serializeBloomFilter(channel.bloomFilter.filter).get(),
+    )
+    let authorizer = Authorizer(
+      authorize: proc(message: SdsMessage, context: seq[byte]): Result[bool, string] {.
+          gcsafe, raises: []
+      .} =
+        return ok(true)
+    )
+    check (await manager.setAuthorizer(authorizer)).isOk()
+    let received = await manager.unwrapReceivedMessage(serializeMessage(message).get())
+    check:
+      received.isOk()
+      received.get().message == some(message.content)
+      received.get().missingDeps.len == 1
+      channel.outgoingBuffer.len == 0
+      "accepted" in channel.incomingBuffer
+      "missing" in channel.outgoingRepairBuffer
+
+  asyncTest "malformed input never reaches the authorizer":
+    let manager = newReliabilityManager("alice").get()
+    defer: await manager.cleanup()
+    var calls = 0
+    let authorizer = Authorizer(
+      authorize: proc(message: SdsMessage, context: seq[byte]): Result[bool, string] {.
+          gcsafe, raises: []
+      .} =
+        inc calls
+        return ok(true)
+    )
+    check (await manager.setAuthorizer(authorizer)).isOk()
+    let received = await manager.unwrapReceivedMessage(@[byte(255)])
+    check:
+      received.isErr()
+      received.error == ReliabilityError.reDeserializationError
+      calls == 0
+      manager.channels.len == 0
+
+  asyncTest "authorizers are scoped to their manager and can be cleared":
+    let rejectingManager = newReliabilityManager("alice").get()
+    let acceptingManager = newReliabilityManager("carol").get()
+    defer:
+      await rejectingManager.cleanup()
+      await acceptingManager.cleanup()
+
+    var rejectingCalls = 0
+    var acceptingCalls = 0
+    check (await rejectingManager.setAuthorizer(Authorizer(
+      authorize: proc(message: SdsMessage, context: seq[byte]): Result[bool, string] {.
+          gcsafe, raises: []
+      .} =
+        inc rejectingCalls
+        return ok(false)
+    ))).isOk()
+    check (await acceptingManager.setAuthorizer(Authorizer(
+      authorize: proc(message: SdsMessage, context: seq[byte]): Result[bool, string] {.
+          gcsafe, raises: []
+      .} =
+        inc acceptingCalls
+        return ok(true)
+    ))).isOk()
+
+    let serialized = serializeMessage(SdsMessage.init(
+      messageId = "manager-scope", lamportTimestamp = 1,
+      causalHistory = @[],
+      channelId = testChannel, content = @[byte(1)], bloomFilter = @[],
+    )).get()
+
+    let rejected = await rejectingManager.unwrapReceivedMessage(serialized)
+    check:
+      rejected.isErr()
+      rejected.error == ReliabilityError.reMessageRejected
+      rejectingManager.channels.len == 0
+
+    check (await acceptingManager.unwrapReceivedMessage(serialized)).isOk()
+    check rejectingCalls == 1
+    check acceptingCalls == 1
+
+    check (await rejectingManager.setAuthorizer(Authorizer())).isOk()
+    check (await rejectingManager.unwrapReceivedMessage(serialized)).isOk()
+    check rejectingCalls == 1
+
 # Special cases handling
 suite "Special Cases Handling":
   var rm: ReliabilityManager

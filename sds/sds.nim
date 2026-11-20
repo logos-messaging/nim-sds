@@ -380,7 +380,9 @@ proc queueMissingRepairs(
         OutgoingRepairEntry(outHistEntry: dep, minTimeRepairReq: now + delay)
 
 proc unwrapReceivedMessage*(
-    rm: ReliabilityManager, message: seq[byte]
+    rm: ReliabilityManager,
+    message: seq[byte],
+    authorizationContext: seq[byte] = @[],
 ): Future[
     Result[
       tuple[
@@ -391,13 +393,23 @@ proc unwrapReceivedMessage*(
       ReliabilityError,
     ]
 ] {.async: (raises: []).} =
-  ## Unwraps a received message and processes its reliability metadata.
+  ## Decodes and optionally authorizes before processing reliability metadata.
   try:
     let channelId = extractChannelId(message).valueOr:
       return err(ReliabilityError.reDeserializationError)
 
     let msg = deserializeMessage(message).valueOr:
       return err(ReliabilityError.reDeserializationError)
+
+    if not rm.authorizer.authorize.isNil():
+      let accepted = rm.authorizer.authorize(msg, authorizationContext).valueOr:
+        error "Incoming SDS message authorization failed",
+          channelId = channelId, messageId = msg.messageId, reason = error
+        return err(ReliabilityError.reAuthorizationError)
+      if not accepted:
+        debug "Incoming SDS message rejected",
+          channelId = channelId, messageId = msg.messageId
+        return err(ReliabilityError.reMessageRejected)
 
     let isSync = msg.content.len == 0
     if isSync and rm.participantId.len > 0 and msg.senderId == rm.participantId:
@@ -592,6 +604,21 @@ proc setCallbacks*(
       rm.lock.release()
   except CatchableError:
     error "Failed to set callbacks", msg = getCurrentExceptionMsg()
+
+proc setAuthorizer*(
+    rm: ReliabilityManager, authorizer: Authorizer
+): Future[Result[void, ReliabilityError]] {.async: (raises: []).} =
+  ## Sets the manager-wide authorization policy for incoming messages.
+  try:
+    await rm.lock.acquire()
+    try:
+      rm.authorizer = authorizer
+    finally:
+      rm.lock.release()
+    return ok()
+  except CatchableError:
+    error "Failed to set authorizer", msg = getCurrentExceptionMsg()
+    return err(ReliabilityError.reInternalError)
 
 proc checkUnacknowledgedMessages(
     rm: ReliabilityManager, channelId: SdsChannelID
