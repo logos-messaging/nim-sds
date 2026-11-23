@@ -225,13 +225,13 @@ proc ffiPersistence(): Persistence =
         let data = parseJson(loaded.value).to(PersistenceChannelData)
         var channel = ChannelData.init()
         if data.meta.isSome() and data.meta.get().len > 0:
-          let decoded = ChannelMeta.decode(decode(data.meta.get()).toBytes())
-          if decoded.isErr():
-            if decoded.error.kind == ProtobufErrorKind.UnsupportedVersion:
-              return err("unsupported persisted SDS channel metadata version: " & $decoded.error.version)
+          channel.meta = ChannelMeta.decode(decode(data.meta.get()).toBytes()).valueOr:
+            if error.kind == ProtobufErrorKind.UnsupportedVersion:
+              return err(
+                "unsupported persisted SDS channel metadata version: " & $error.version
+              )
             corruption = "failed to decode persisted SDS channel metadata"
-          else:
-            channel.meta = decoded.value
+            channel.meta
         if corruption.len == 0 and data.messageHistory.isSome():
           for encodedMessage in data.messageHistory.get():
             let message = wire.deserializeMessage(decode(encodedMessage).toBytes())
@@ -241,6 +241,8 @@ proc ffiPersistence(): Persistence =
             channel.messageHistory.add(message.value)
         if corruption.len == 0:
           return ok(channel)
+      except ValueError as exc:
+        corruption = "failed to decode persisted SDS channel: " & exc.msg
       except CatchableError as exc:
         return err("failed to load persisted SDS channel: " & exc.msg)
 
