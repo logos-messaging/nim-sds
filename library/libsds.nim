@@ -216,24 +216,41 @@ proc ffiPersistence(): Persistence =
   result.loadChannel = proc(
       channelId: SdsChannelID
   ): Future[Result[ChannelData, string]] {.async: (raises: []), gcsafe.} =
-    let loaded = invokePersistence(PersistenceOperation.LoadChannel, $channelId, [])
-    if loaded.isErr():
-      return err("could not load SDS channel: " & loaded.error)
-    try:
-      let data = parseJson(loaded.value).to(PersistenceChannelData)
-      var channel = ChannelData.init()
-      if data.meta.isSome() and data.meta.get().len > 0:
-        let decoded = ChannelMeta.decode(decode(data.meta.get()).toBytes()).valueOr:
-          return err("failed to decode persisted SDS channel metadata")
-        channel.meta = decoded
-      if data.messageHistory.isSome():
-        for encodedMessage in data.messageHistory.get():
-          let message = wire.deserializeMessage(decode(encodedMessage).toBytes()).valueOr:
-            return err("failed to decode persisted SDS history message")
-          channel.messageHistory.add(message)
-      return ok(channel)
-    except CatchableError as exc:
-      return err("failed to load persisted SDS channel: " & exc.msg)
+    for attempt in 0..1:
+      let loaded = invokePersistence(PersistenceOperation.LoadChannel, $channelId, [])
+      if loaded.isErr():
+        return err("could not load SDS channel: " & loaded.error)
+      var corruption = ""
+      try:
+        let data = parseJson(loaded.value).to(PersistenceChannelData)
+        var channel = ChannelData.init()
+        if data.meta.isSome() and data.meta.get().len > 0:
+          let decoded = ChannelMeta.decode(decode(data.meta.get()).toBytes())
+          if decoded.isErr():
+            if decoded.error.kind == ProtobufErrorKind.UnsupportedVersion:
+              return err("unsupported persisted SDS channel metadata version: " & $decoded.error.version)
+            corruption = "failed to decode persisted SDS channel metadata"
+          else:
+            channel.meta = decoded.value
+        if corruption.len == 0 and data.messageHistory.isSome():
+          for encodedMessage in data.messageHistory.get():
+            let message = wire.deserializeMessage(decode(encodedMessage).toBytes())
+            if message.isErr():
+              corruption = "failed to decode persisted SDS history message"
+              break
+            channel.messageHistory.add(message.value)
+        if corruption.len == 0:
+          return ok(channel)
+      except CatchableError as exc:
+        return err("failed to load persisted SDS channel: " & exc.msg)
+
+      if attempt == 1:
+        return err(corruption & " after resetting channel")
+      warn "resetting corrupt persisted SDS channel", channelId = channelId, cause = corruption
+      let dropped = invokePersistence(PersistenceOperation.DropChannel, $channelId, [])
+      if dropped.isErr():
+        return err("could not reset corrupt SDS channel: " & dropped.error)
+    return err("failed to load persisted SDS channel")
 
   result.dropChannel = proc(
       channelId: SdsChannelID

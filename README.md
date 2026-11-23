@@ -10,6 +10,12 @@ messages removed after the configured sweep budget instead trigger the optional
 `onMessageExpired` callback (`message_expired`), with `messageId` and `channelId`.
 Expiry is not delivery confirmation.
 
+When the FFI persistence bridge detects corrupt channel metadata or history, it
+logs a warning and atomically drops that channel's persisted state before
+retrying the load once. This loses the channel's causal history and buffered
+messages. Storage failures and unsupported metadata versions do not trigger a
+reset.
+
 The existing sweep timing and accounting are unchanged: after `resendInterval`,
 the sweep increments `resendAttempts` and resets `sendTime`, or expires the
 message if `maxResendAttempts` has been reached. The sweep does not transmit

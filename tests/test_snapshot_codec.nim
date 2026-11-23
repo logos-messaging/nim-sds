@@ -7,7 +7,7 @@ import ../sds/snapshot_codec
 import
   ../sds/types/[
     sds_message, sds_message_id, history_entry, unacknowledged_message,
-    incoming_message, repair_entry,
+    incoming_message, repair_entry, protobuf_error,
   ]
 
 converter toParticipantID(s: string): SdsParticipantID =
@@ -167,7 +167,13 @@ suite "snapshot codec — ChannelMeta":
     var m = ChannelMeta.init()
     m.schemaVersion = 999'u32
     let buf = encode(m).buffer
-    check ChannelMeta.decode(buf).isErr
+    let decoded = ChannelMeta.decode(buf)
+    let decodeError = decoded.errorOr:
+      ProtobufError(kind: ProtobufErrorKind.DecodeFailure, error: ProtoError.VarintDecode)
+    check:
+      decoded.isErr
+      decodeError.kind == ProtobufErrorKind.UnsupportedVersion
+      decodeError.version == 999'u32
 
 suite "snapshot codec — ChannelData":
   test "empty channel data round-trips":

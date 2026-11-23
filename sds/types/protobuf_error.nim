@@ -16,6 +16,7 @@ type
   ProtobufErrorKind* {.pure.} = enum
     DecodeFailure
     MissingRequiredField
+    UnsupportedVersion
 
   ProtobufError* = object
     case kind*: ProtobufErrorKind
@@ -23,6 +24,8 @@ type
       error*: ProtoError
     of MissingRequiredField:
       field*: string
+    of UnsupportedVersion:
+      version*: uint32
 
   ProtobufResult*[T] = Result[T, ProtobufError]
 
