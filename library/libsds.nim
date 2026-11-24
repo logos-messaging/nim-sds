@@ -14,17 +14,18 @@
 when not compileOption("threads"):
   {.error: "libsds needs --threads:on".}
 
-import std/[base64, json, options]
+import std/[base64, json, options, times]
 import ffi
 import sds
 import sds/types/persistence
 import sds/protobuf as wire
 import sds/snapshot_codec
 import stew/byteutils
+import ./json_responses
 import
   ./events/[
     json_message_ready_event, json_message_sent_event, json_missing_dependencies_event,
-    json_periodic_sync_event, json_repair_ready_event, json_message_expired_event,
+    json_repair_ready_event, json_message_expired_event,
   ]
 
 # Frees memory allocated by native callbacks with malloc. Must match that
@@ -40,6 +41,11 @@ declareLibrary("sds", ReliabilityManager)
 
 type SdsRetrievalHintProvider* = proc(
   messageId: cstring, hint: ptr cstring, hintLen: ptr csize_t, userData: pointer
+) {.cdecl, gcsafe, raises: [].}
+
+type SdsChannelRetrievalHintProvider* = proc(
+  messageId: cstring, channelId: ptr byte, channelIdLen: csize_t,
+  hint: ptr cstring, hintLen: ptr csize_t, userData: pointer
 ) {.cdecl, gcsafe, raises: [].}
 
 type SdsPersistenceCallback* = proc(
@@ -65,6 +71,8 @@ type PersistenceOperation = enum
 # it during message processing.
 var sdsRetrievalHintCb {.threadvar.}: pointer
 var sdsRetrievalHintUserData {.threadvar.}: pointer
+var sdsChannelRetrievalHintCb {.threadvar.}: pointer
+var sdsChannelRetrievalHintUserData {.threadvar.}: pointer
 var sdsPersistenceCb {.threadvar.}: pointer
 var sdsPersistenceUserData {.threadvar.}: pointer
 
@@ -74,10 +82,14 @@ var sdsPersistenceUserData {.threadvar.}: pointer
 type SdsConfig* {.ffi.} = object
   participantId: string ## empty disables SDS-R (see newReliabilityManager)
   persistenceEnabled: bool
+  syncMessageIntervalMs: int64 ## zero uses the default
 
 type SdsWrapRequest* {.ffi.} = object
   message: seq[byte]
   messageId: string
+  channelId: string
+
+type SdsChannelRequest* {.ffi.} = object
   channelId: string
 
 type SdsWrapResponse* {.ffi.} = object
@@ -232,11 +244,24 @@ proc sdsCreate*(
   # stale C function pointer is never invoked.
   sdsRetrievalHintCb = nil
   sdsRetrievalHintUserData = nil
+  sdsChannelRetrievalHintCb = nil
+  sdsChannelRetrievalHintUserData = nil
   sdsPersistenceCb = nil
   sdsPersistenceUserData = nil
 
   let persistence = if config.persistenceEnabled: ffiPersistence() else: noOpPersistence()
-  let rm = newReliabilityManager(participantId = config.participantId.SdsParticipantID, persistence = persistence).valueOr:
+  var reliabilityConfig = defaultConfig()
+  if config.syncMessageIntervalMs < 0:
+    return err("syncMessageIntervalMs must not be negative")
+  if config.syncMessageIntervalMs > 0:
+    reliabilityConfig.syncMessageInterval =
+      initDuration(milliseconds = config.syncMessageIntervalMs)
+
+  let rm = newReliabilityManager(
+    participantId = config.participantId.SdsParticipantID,
+    config = reliabilityConfig,
+    persistence = persistence,
+  ).valueOr:
     error "Failed creating reliability manager", error = error
     return err("Failed creating reliability manager: " & $error)
 
@@ -264,10 +289,6 @@ proc sdsCreate*(
     dispatchFfiEvent("message_expired"):
       $JsonMessageExpiredEvent.new(messageId, channelId)
 
-  let periodicSyncCb: PeriodicSyncCallback = proc() {.gcsafe, raises: [].} =
-    dispatchFfiEvent("periodic_sync"):
-      $JsonPeriodicSyncEvent.new()
-
   let repairReadyCb = proc(message: seq[byte], channelId: SdsChannelID) {.gcsafe.} =
     dispatchFfiEvent("repair_ready"):
       $JsonRepairReadyEvent.new(message, channelId)
@@ -289,9 +310,29 @@ proc sdsCreate*(
       return hintBytes
     return @[]
 
+  let channelRetrievalHintProvider = proc(
+      messageId: SdsMessageID, channelId: SdsChannelID
+  ): seq[byte] {.gcsafe.} =
+    if sdsChannelRetrievalHintCb.isNil():
+      return retrievalHintProvider(messageId)
+    var hint: cstring
+    var hintLen: csize_t
+    var channelIdPtr: ptr byte
+    if channelId.len > 0:
+      channelIdPtr = cast[ptr byte](unsafeAddr channelId[0])
+    cast[SdsChannelRetrievalHintProvider](sdsChannelRetrievalHintCb)(
+      messageId.cstring, channelIdPtr, csize_t(channelId.len), addr hint, addr hintLen,
+      sdsChannelRetrievalHintUserData
+    )
+    if not hint.isNil():
+      if hintLen > 0:
+        result = newSeq[byte](hintLen)
+        copyMem(addr result[0], hint, hintLen)
+      c_free(hint)
+
   await rm.setCallbacks(
-    messageReadyCb, messageSentCb, missingDependenciesCb, periodicSyncCb,
-    retrievalHintProvider, repairReadyCb, messageExpiredCb,
+    messageReadyCb, messageSentCb, missingDependenciesCb,
+    retrievalHintProvider, repairReadyCb, messageExpiredCb, channelRetrievalHintProvider,
   )
 
   return ok(rm)
@@ -309,6 +350,16 @@ proc sdsWrapOutgoingMessage*(
     return err("error processing wrap request: " & $error)
   return ok(SdsWrapResponse(message: wrapped))
 
+proc sdsEnsureChannel*(
+    rm: ReliabilityManager, req: SdsChannelRequest
+): Future[Result[string, string]] {.ffi.} =
+  (await rm.ensureChannel(req.channelId)).isOkOr:
+    return err("error ensuring SDS channel: " & $error)
+  return ok("")
+
+proc sdsTick*(rm: ReliabilityManager): Future[Result[string, string]] {.ffi.} =
+  return ok(tickResponse(await rm.tick()))
+
 proc sdsUnwrapReceivedMessage*(
     rm: ReliabilityManager, req: SdsUnwrapRequest
 ): Future[Result[string, string]] {.ffi.} =
@@ -320,17 +371,7 @@ proc sdsUnwrapReceivedMessage*(
   ).valueOr:
     return err("error processing unwrap request: " & $error)
 
-  var node = newJObject()
-  node["message"] = %*unwrapped
-  node["channelId"] = %*channelId
-  var missingDepsNode = newJArray()
-  for dep in missingDeps:
-    var depNode = newJObject()
-    depNode["messageId"] = %*dep.messageId
-    depNode["retrievalHint"] = %*encode(dep.retrievalHint)
-    missingDepsNode.add(depNode)
-  node["missingDeps"] = missingDepsNode
-  return ok($node)
+  return ok(unwrapResponse(unwrapped, missingDeps, channelId))
 
 proc sdsMarkDependenciesMet*(
     rm: ReliabilityManager, req: SdsMarkDependenciesRequest
@@ -361,6 +402,8 @@ proc sdsStartPeriodicTasks*(
 proc sdsDestroy*(rm: ReliabilityManager) {.ffiDtor.} =
   sdsRetrievalHintCb = nil
   sdsRetrievalHintUserData = nil
+  sdsChannelRetrievalHintCb = nil
+  sdsChannelRetrievalHintUserData = nil
   sdsPersistenceCb = nil
   sdsPersistenceUserData = nil
 
@@ -394,6 +437,35 @@ proc sds_set_retrieval_hint_provider(
       ffi_context.sendRequestToFFIThread(
         ctx,
         SdsSetHintReq.ffiNewReq(
+          sdsNoopCallback, nil, cast[uint64](callback), cast[uint64](userData)
+        ),
+        ctxToken.tokenGeneration(),
+      )
+    except Exception as exc:
+      Result[void, string].err("sendRequestToFFIThread exception: " & exc.msg)
+  if sendRes.isErr():
+    return RET_ERR
+  return RET_OK
+
+registerReqFFI(SdsSetChannelHintReq, ctx: ptr FFIContext[ReliabilityManager]):
+  proc(cbAddr: uint64, udAddr: uint64): Future[Result[string, string]] {.async.} =
+    sdsChannelRetrievalHintCb = cast[pointer](cbAddr)
+    sdsChannelRetrievalHintUserData =
+      if cbAddr == 0: nil else: cast[pointer](udAddr)
+    return ok("")
+
+proc sds_set_channel_retrieval_hint_provider(
+    ctxToken: FFICtxToken, callback: SdsChannelRetrievalHintProvider, userData: pointer
+): cint {.dynlib, exportc, cdecl, raises: [].} =
+  initializeLibrary()
+  let ctx = ReliabilityManagerFFIPool.resolveCtx(ctxToken)
+  if ctx.isNil():
+    return RET_ERR
+  let sendRes =
+    try:
+      ffi_context.sendRequestToFFIThread(
+        ctx,
+        SdsSetChannelHintReq.ffiNewReq(
           sdsNoopCallback, nil, cast[uint64](callback), cast[uint64](userData)
         ),
         ctxToken.tokenGeneration(),
