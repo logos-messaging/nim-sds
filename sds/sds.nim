@@ -24,7 +24,8 @@ proc randomSyncJitter(interval: times.Duration): Result[times.Duration, Reliabil
   for b in randomBytes:
     randomValue = (randomValue shl 8) or uint64(b)
   let maxJitterMs = interval.inMilliseconds div 2
-  return ok(initDuration(milliseconds = int64(randomValue mod uint64(maxJitterMs + 1))))
+  let ms = int64(randomValue mod uint64(maxJitterMs + 1))
+  return ok(initDuration(milliseconds = ms))
 
 proc newReliabilityManager*(
     participantId: SdsParticipantID,
@@ -124,8 +125,6 @@ proc wrapMessage(
       await rm.lock.acquire()
     try:
       try:
-        if isSync and channelId notin rm.channels:
-          return ok(newSeq[byte]())
         let channel = (await rm.getOrCreateChannel(channelId)).valueOr:
           return err(error)
         let now = getTime()
@@ -262,6 +261,7 @@ proc tick*(rm: ReliabilityManager): Future[TickResult] {.
     for channelId in channelIds:
       await rm.lock.acquire()
       try:
+        # The channel may have been removed since channelIds was snapshotted.
         if channelId notin rm.channels:
           continue
         let channel = rm.channels[channelId]

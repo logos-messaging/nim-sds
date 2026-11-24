@@ -1,21 +1,22 @@
-import std/[base64, json, options]
+import std/[base64, json, jsonutils, options]
 import sds
 
-proc tickResponse*(tick: TickResult): string =
-  var node = newJArray()
-  for event in tick.events:
-    var entry = newJObject()
-    entry["channelId"] = %*event.channelId
-    if event.error.isSome():
-      entry["error"] = %*($event.error.get())
-    else:
-      entry["payload"] = %*encode(event.payload)
-    node.add(entry)
-  var response = newJObject()
-  response["events"] = node
+proc toJsonHook(event: TickEvent): JsonNode =
+  result = newJObject()
+  result["channelId"] = toJson(event.channelId)
+  if event.error.isSome():
+    result["error"] = toJson($event.error.get())
+  else:
+    result["payload"] = toJson(encode(event.payload))
+
+proc toJsonHook(tick: TickResult): JsonNode =
+  result = newJObject()
+  result["events"] = toJson(tick.events)
   if tick.error.isSome():
-    response["error"] = %*($tick.error.get())
-  return $response
+    result["error"] = toJson($tick.error.get())
+
+proc tickResponse*(tick: TickResult): string =
+  $toJson(tick)
 
 proc unwrapResponse*(
     message: Option[seq[byte]], missingDeps: seq[HistoryEntry], channelId: SdsChannelID
