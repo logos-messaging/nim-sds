@@ -6,9 +6,10 @@ import ./callbacks
 import ./reliability_config
 import ./channel_context
 import ./persistence
+import ./authorizer
 export
   sds_message_id, history_entry, callbacks, reliability_config, channel_context,
-  persistence
+  persistence, authorizer
 
 type ReliabilityManager* = ref object
   channels*: Table[SdsChannelID, ChannelContext]
@@ -33,6 +34,7 @@ type ReliabilityManager* = ref object
   onRetrievalHint*: RetrievalHintProvider
   onChannelRetrievalHint*: ChannelRetrievalHintProvider
   onRepairReady*: RepairReadyCallback
+  authorizer*: Authorizer
 
 proc new*(
     T: type ReliabilityManager,
@@ -53,5 +55,6 @@ proc new*(
     persistence: persistence,
     lock: newAsyncLock(),
     periodicTasks: @[],
+    authorizer: Authorizer(),
   )
   return rm
