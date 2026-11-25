@@ -213,46 +213,42 @@ proc ffiPersistence(): Persistence =
       return err("could not update SDS channel history: " & saved.error)
     return ok()
 
-  result.loadChannel = proc(
+  result.loadChannelWithStatus = proc(
       channelId: SdsChannelID
-  ): Future[Result[ChannelData, string]] {.async: (raises: []), gcsafe.} =
-    for attempt in 0..1:
-      let loaded = invokePersistence(PersistenceOperation.LoadChannel, $channelId, [])
-      if loaded.isErr():
-        return err("could not load SDS channel: " & loaded.error)
-      var corruption = ""
-      try:
-        let data = parseJson(loaded.value).to(PersistenceChannelData)
-        var channel = ChannelData.init()
-        if data.meta.isSome() and data.meta.get().len > 0:
-          channel.meta = ChannelMeta.decode(decode(data.meta.get()).toBytes()).valueOr:
-            if error.kind == ProtobufErrorKind.UnsupportedVersion:
-              return err(
-                "unsupported persisted SDS channel metadata version: " & $error.version
-              )
-            corruption = "failed to decode persisted SDS channel metadata"
-            channel.meta
-        if corruption.len == 0 and data.messageHistory.isSome():
-          for encodedMessage in data.messageHistory.get():
-            let message = wire.deserializeMessage(decode(encodedMessage).toBytes())
-            if message.isErr():
-              corruption = "failed to decode persisted SDS history message"
-              break
-            channel.messageHistory.add(message.value)
-        if corruption.len == 0:
-          return ok(channel)
-      except ValueError as exc:
-        corruption = "failed to decode persisted SDS channel: " & exc.msg
-      except CatchableError as exc:
-        return err("failed to load persisted SDS channel: " & exc.msg)
+  ): Future[Result[ChannelData, ChannelLoadError]] {.async: (raises: []), gcsafe.} =
+    let loaded = invokePersistence(PersistenceOperation.LoadChannel, $channelId, [])
+    if loaded.isErr():
+      return err(ChannelLoadError(
+        kind: ChannelLoadErrorKind.BackendFailure, detail: loaded.error
+      ))
 
-      if attempt == 1:
-        return err(corruption & " after resetting channel")
-      warn "resetting corrupt persisted SDS channel", channelId = channelId, cause = corruption
-      let dropped = invokePersistence(PersistenceOperation.DropChannel, $channelId, [])
-      if dropped.isErr():
-        return err("could not reset corrupt SDS channel: " & dropped.error)
-    return err("failed to load persisted SDS channel")
+    try:
+      let data = parseJson(loaded.value).to(PersistenceChannelData)
+      var channel = ChannelData.init()
+      if data.meta.isSome() and data.meta.get().len > 0:
+        channel.meta = ChannelMeta.decode(decode(data.meta.get()).toBytes()).valueOr:
+          if error.kind == ProtobufErrorKind.UnsupportedVersion:
+            return err(ChannelLoadError(
+              kind: ChannelLoadErrorKind.UnsupportedVersion,
+              detail: "unsupported persisted SDS channel metadata version: " & $error.version,
+            ))
+          return err(ChannelLoadError(
+            kind: ChannelLoadErrorKind.CorruptData,
+            detail: "failed to decode persisted SDS channel metadata",
+          ))
+      if data.messageHistory.isSome():
+        for encodedMessage in data.messageHistory.get():
+          let message = wire.deserializeMessage(decode(encodedMessage).toBytes()).valueOr:
+            return err(ChannelLoadError(
+              kind: ChannelLoadErrorKind.CorruptData,
+              detail: "failed to decode persisted SDS history message",
+            ))
+          channel.messageHistory.add(message)
+      return ok(channel)
+    except CatchableError as exc:
+      return err(ChannelLoadError(
+        kind: ChannelLoadErrorKind.InvalidResponse, detail: exc.msg
+      ))
 
   result.dropChannel = proc(
       channelId: SdsChannelID
@@ -372,12 +368,18 @@ proc sdsCreate*(
 ################################################################################
 ### Async methods — each runs its body on the worker thread.
 
+proc channelLoadCorruptResponse(channelId: SdsChannelID): string =
+  # Channel identifiers are wire bytes and need not be valid UTF-8.
+  $(%*{"code": "channel_load_corrupt", "channelIdBase64": encode($channelId)})
+
 proc sdsWrapOutgoingMessage*(
     rm: ReliabilityManager, req: SdsWrapRequest
 ): Future[Result[SdsWrapResponse, string]] {.ffi.} =
   let wrapped = (
     await wrapOutgoingMessage(rm, req.message, req.messageId, req.channelId)
   ).valueOr:
+    if error == ReliabilityError.reChannelLoadCorrupt:
+      return err(channelLoadCorruptResponse(req.channelId))
     error "WRAP_MESSAGE failed", error = error
     return err("error processing wrap request: " & $error)
   return ok(SdsWrapResponse(message: wrapped))
@@ -386,6 +388,8 @@ proc sdsEnsureChannel*(
     rm: ReliabilityManager, req: SdsChannelRequest
 ): Future[Result[string, string]] {.ffi.} =
   (await rm.ensureChannel(req.channelId)).isOkOr:
+    if error == ReliabilityError.reChannelLoadCorrupt:
+      return err(channelLoadCorruptResponse(req.channelId))
     return err("error ensuring SDS channel: " & $error)
   return ok("")
 
@@ -401,6 +405,11 @@ proc sdsUnwrapReceivedMessage*(
   let (unwrapped, missingDeps, channelId) = (
     await unwrapReceivedMessage(rm, req.message, req.authorizationContext)
   ).valueOr:
+    if error == ReliabilityError.reChannelLoadCorrupt:
+      # Bootstrap only runs after wire decoding and the configured authorizer.
+      let channelId = wire.extractChannelId(req.message).valueOr:
+        return err("could not identify corrupt SDS channel")
+      return err(channelLoadCorruptResponse(channelId))
     return err("error processing unwrap request: " & $error)
 
   return ok(unwrapResponse(unwrapped, missingDeps, channelId))

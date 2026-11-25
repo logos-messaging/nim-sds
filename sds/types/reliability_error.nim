@@ -8,3 +8,4 @@ type ReliabilityError* {.pure.} = enum
   rePersistenceError ## A persistence backend operation (read or write) failed.
   reMessageRejected ## The authorizer denied the incoming message.
   reAuthorizationError ## The authorizer could not authorize the incoming message.
+  reChannelLoadCorrupt ## Persisted channel data could not be decoded.

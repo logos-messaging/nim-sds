@@ -436,9 +436,17 @@ proc getOrCreateChannel*(
           rm.config.bloomFilterCapacity, rm.config.bloomFilterErrorRate
         )
       )
-      let data = (await rm.persistence.loadChannel(channelId)).valueOr:
-        warn "persistence operation failed", cause = error
-        return err(ReliabilityError.rePersistenceError)
+      let data =
+        if rm.persistence.loadChannelWithStatus.isNil():
+          (await rm.persistence.loadChannel(channelId)).valueOr:
+            warn "persistence operation failed", cause = error
+            return err(ReliabilityError.rePersistenceError)
+        else:
+          (await rm.persistence.loadChannelWithStatus(channelId)).valueOr:
+            warn "persistence operation failed", cause = error.detail
+            if error.kind == ChannelLoadErrorKind.CorruptData:
+              return err(ReliabilityError.reChannelLoadCorrupt)
+            return err(ReliabilityError.rePersistenceError)
 
       channel.lamportTimestamp = data.meta.lamportTimestamp
       # Backend contract: messageHistory MUST be ordered oldest-first.
