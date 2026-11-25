@@ -1,3 +1,5 @@
+const MaxBloomFilterHashes* = 32
+
 type BloomFilter* {.requiresInit.} = object
   capacity*: int
   errorRate*: float

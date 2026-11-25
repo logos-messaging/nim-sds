@@ -1513,6 +1513,41 @@ suite "Special Cases Handling":
       result.isOk()
       result.get()[1].len == 0 # No missing dependencies
 
+  asyncTest "bloom filter with inconsistent geometry is rejected":
+    check (await rm.wrapOutgoingMessage(@[byte(1)], "unacked", testChannel)).isOk()
+
+    let geometries = @[
+      (mBits: 1_000_000, kHashes: 1, capacity: 1, intArray: @[0]),
+      (mBits: 0, kHashes: 1, capacity: 1, intArray: @[0]),
+      (mBits: 64, kHashes: 0, capacity: 1, intArray: @[0]),
+      (mBits: 64, kHashes: high(int32), capacity: 1, intArray: @[0]),
+      (mBits: 64, kHashes: 1, capacity: 0, intArray: @[0]),
+    ]
+    for i, g in geometries:
+      let bf = BloomFilter.init(
+        capacity = g.capacity,
+        errorRate = 0.01,
+        kHashes = g.kHashes,
+        mBits = g.mBits,
+        intArray = g.intArray,
+      )
+      let bfBytes = serializeBloomFilter(bf)
+      check bfBytes.isOk()
+      check deserializeBloomFilter(bfBytes.get()).isErr()
+
+      let msg = SdsMessage.init(
+        messageId = "crafted-bf-" & $i,
+        lamportTimestamp = 1,
+        causalHistory = @[],
+        channelId = testChannel,
+        content = @[byte(2)],
+        bloomFilter = bfBytes.get(),
+      )
+      let unwrapResult = await rm.unwrapReceivedMessage(serializeMessage(msg).get())
+      check unwrapResult.isOk()
+
+    check rm.channels[testChannel].outgoingBuffer.len == 1
+
   asyncTest "duplicate message handling":
     var messageReadyCount = 0
     await rm.setCallbacks(

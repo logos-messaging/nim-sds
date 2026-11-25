@@ -225,12 +225,21 @@ proc deserializeBloomFilter*(data: seq[byte]): Result[BloomFilter, ReliabilityEr
       copyMem(addr leVal, unsafeAddr rawData[i * sizeof(int)], sizeof(int))
       littleEndian64(addr intArray[i], addr leVal)
 
+    let
+      capacity = pb.capacity.valueOr(0'u64)
+      kHashes = pb.kHashes.valueOr(0'u64)
+      mBits = pb.mBits.valueOr(0'u64)
+    if capacity == 0 or capacity > uint64(high(int32)) or kHashes == 0 or
+        kHashes > MaxBloomFilterHashes.uint64 or mBits == 0 or
+        mBits > uint64(intArray.len) * uint64(sizeof(int) * 8):
+      return err(ReliabilityError.reDeserializationError)
+
     return ok(
       BloomFilter.init(
-        capacity = int(pb.capacity.valueOr(0'u64)),
+        capacity = int(capacity),
         errorRate = float(pb.errorRate.valueOr(0'u64)) / 1_000_000,
-        kHashes = int(pb.kHashes.valueOr(0'u64)),
-        mBits = int(pb.mBits.valueOr(0'u64)),
+        kHashes = int(kHashes),
+        mBits = int(mBits),
         intArray = intArray,
       )
     )
