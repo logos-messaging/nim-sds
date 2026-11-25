@@ -1565,6 +1565,100 @@ suite "Special Cases Handling":
       not largeResult.isOk()
       largeResult.error == reMessageTooLarge
 
+suite "Buffer Limits":
+  var rm: ReliabilityManager
+
+  asyncSetup:
+    let rmResult = newReliabilityManager(
+      participantId = "alice",
+      config = ReliabilityConfig.init(maxIncomingBuffer = 3, maxOutgoingRepairBuffer = 4),
+    )
+    check rmResult.isOk()
+    rm = rmResult.get()
+    check (await rm.ensureChannel(testChannel)).isOk()
+
+  asyncTeardown:
+    if not rm.isNil:
+      await rm.cleanup()
+
+  proc pending(id: string, deps: seq[string]): seq[byte] =
+    var history: seq[HistoryEntry]
+    for d in deps:
+      history.add(HistoryEntry(messageId: d, senderId: "mallory"))
+    serializeMessage(
+      SdsMessage.init(
+        messageId = id,
+        lamportTimestamp = 1,
+        causalHistory = history,
+        channelId = testChannel,
+        content = @[byte(1)],
+        bloomFilter = @[],
+      )
+    ).get()
+
+  asyncTest "incoming buffer drops the oldest message when full":
+    for i in 0 ..< 5:
+      check (await rm.unwrapReceivedMessage(pending("m" & $i, @["missing" & $i]))).isOk()
+
+    let buffer = rm.channels[testChannel].incomingBuffer
+    check:
+      buffer.len == 3
+      "m0" notin buffer
+      "m1" notin buffer
+      "m4" in buffer
+
+    check (await rm.markDependenciesMet(@["missing4"], testChannel)).isOk()
+    check:
+      rm.channels[testChannel].incomingBuffer.len == 2
+      "m4" in rm.channels[testChannel].messageHistory
+
+  asyncTest "outgoing repair buffer stops growing when full":
+    var deps: seq[string]
+    for i in 0 ..< 10:
+      deps.add("missing" & $i)
+    check (await rm.unwrapReceivedMessage(pending("m0", deps))).isOk()
+    check (await rm.unwrapReceivedMessage(pending("m1", @["other"]))).isOk()
+
+    check rm.channels[testChannel].outgoingRepairBuffer.len == 4
+
+  asyncTest "re-buffering a buffered message does not evict":
+    for i in 0 ..< 3:
+      check (await rm.unwrapReceivedMessage(pending("m" & $i, @["missing" & $i]))).isOk()
+    check (await rm.unwrapReceivedMessage(pending("m0", @["missing0"]))).isOk()
+
+    let buffer = rm.channels[testChannel].incomingBuffer
+    check:
+      buffer.len == 3
+      "m0" in buffer
+      "m1" in buffer
+      "m2" in buffer
+
+  asyncTest "oversized metadata is rejected on receive":
+    var deps: seq[string]
+    for i in 0 ..< 40_000:
+      deps.add("missing-dependency-" & $i)
+    let res = await rm.unwrapReceivedMessage(pending("huge", deps))
+    check:
+      res.isErr()
+      res.error == ReliabilityError.reMessageTooLarge
+      rm.channels[testChannel].incomingBuffer.len == 0
+      rm.channels[testChannel].outgoingRepairBuffer.len == 0
+
+  asyncTest "oversized content is rejected on receive":
+    let msg = SdsMessage.init(
+      messageId = "huge",
+      lamportTimestamp = 1,
+      causalHistory = @[HistoryEntry(messageId: "missing", senderId: "mallory")],
+      channelId = testChannel,
+      content = newSeq[byte](MaxMessageSize + 1),
+      bloomFilter = @[],
+    )
+    let res = await rm.unwrapReceivedMessage(serializeMessage(msg).get())
+    check:
+      res.isErr()
+      res.error == ReliabilityError.reMessageTooLarge
+      rm.channels[testChannel].incomingBuffer.len == 0
+
 suite "cleanup":
   asyncTest "cleanup works correctly":
     let rmResult = newReliabilityManager(participantId = "alice")
