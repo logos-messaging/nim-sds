@@ -24,6 +24,17 @@ import ./channel_meta
 import ./history_update
 export results, sds_message_id, channel_meta, history_update
 
+type
+  ChannelLoadErrorKind* {.pure.} = enum
+    BackendFailure
+    InvalidResponse
+    UnsupportedVersion
+    CorruptData
+
+  ChannelLoadError* = object
+    kind*: ChannelLoadErrorKind
+    detail*: string
+
 type Persistence* = object
   ## Pluggable durability backend. Supplied at `newReliabilityManager`
   ## construction time; defaults to `noOpPersistence()` when not given.
@@ -47,6 +58,11 @@ type Persistence* = object
     ## Bootstrap on `getOrCreateChannel`. Returns the full prior state, or
     ## an empty `ChannelData` if the channel is new on disk. Failure
     ## propagates to the caller — bootstrap is a durability-intent op.
+
+  loadChannelWithStatus*: proc(
+    channelId: SdsChannelID
+  ): Future[Result[ChannelData, ChannelLoadError]] {.async: (raises: []), gcsafe.}
+    ## Optional classified loader. Takes precedence over loadChannel when set.
 
   dropChannel*: proc(channelId: SdsChannelID): Future[Result[void, string]] {.
     async: (raises: []), gcsafe

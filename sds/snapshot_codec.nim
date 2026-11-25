@@ -225,10 +225,7 @@ proc decode*(T: type ChannelMeta, buf: seq[byte]): ProtobufResult[T] =
   if not ?pb.getField(1, ver):
     return err(ProtobufError.missingRequiredField("ChannelMeta.schemaVersion"))
   if ver != ChannelMetaSchemaVersion:
-    # Per the contract: refuse loudly rather than silently truncating.
-    return err(ProtobufError.missingRequiredField(
-      "ChannelMeta.schemaVersion(unsupported)"
-    ))
+    return err(ProtobufError(kind: ProtobufErrorKind.UnsupportedVersion, version: ver))
   meta.schemaVersion = ver
 
   var lts: uint64

@@ -15,6 +15,15 @@ the sweep increments `resendAttempts` and resets `sendTime`, or expires the
 message if `maxResendAttempts` has been reached. The sweep does not transmit
 retries; these counters currently measure elapsed intervals, not transmissions.
 
+## Persisted channel errors
+
+When the FFI persistence bridge cannot decode stored channel metadata or history,
+it returns a JSON error with code `channel_load_corrupt` and the original channel
+ID in `channelIdBase64`. The channel remains uncached. A client that owns the data
+can clear the affected channel's state and call `sds_ensure_channel` to reload it.
+Backend failures, malformed callback responses, and unsupported metadata
+versions return ordinary persistence errors.
+
 ## Periodic sync messages
 
 Call `tick()` regularly to obtain due payloads for loaded channels. Its result
