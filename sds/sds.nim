@@ -365,6 +365,22 @@ proc processIncomingBuffer(
       channelId = channelId, msg = getCurrentExceptionMsg()
     err(ReliabilityError.reInternalError)
 
+proc bufferIncoming(
+    rm: ReliabilityManager, channel: ChannelContext, entry: IncomingMessage
+) =
+  let msgId = entry.message.messageId
+  if msgId notin channel.incomingBuffer:
+    while channel.incomingBuffer.len > 0 and
+        channel.incomingBuffer.len >= rm.config.maxIncomingBuffer:
+      var oldest: SdsMessageID
+      for id in channel.incomingBuffer.keys:
+        oldest = id
+        break
+      warn "Incoming buffer full, dropping oldest buffered message",
+        channelId = entry.message.channelId, messageId = oldest
+      channel.incomingBuffer.del(oldest)
+  channel.incomingBuffer[msgId] = entry
+
 proc queueMissingRepairs(
     rm: ReliabilityManager, channel: ChannelContext,
     missingDeps: seq[HistoryEntry], now: Time,
@@ -373,6 +389,10 @@ proc queueMissingRepairs(
     return
   for dep in missingDeps:
     if dep.messageId notin channel.outgoingRepairBuffer:
+      if channel.outgoingRepairBuffer.len >= rm.config.maxOutgoingRepairBuffer:
+        warn "Outgoing repair buffer full, skipping repair request",
+          messageId = dep.messageId
+        return
       let delay = computeTReq(
         rm.participantId, dep.messageId, rm.config.repairTMin, rm.config.repairTMax,
       )
@@ -400,6 +420,8 @@ proc unwrapReceivedMessage*(
 
     let msg = deserializeMessage(message).valueOr:
       return err(ReliabilityError.reDeserializationError)
+    if msg.content.len > MaxMessageSize:
+      return err(ReliabilityError.reMessageTooLarge)
 
     if not rm.authorizer.authorize.isNil():
       let accepted = rm.authorizer.authorize(msg, authorizationContext).valueOr:
@@ -498,7 +520,7 @@ proc unwrapReceivedMessage*(
         let entry =
           IncomingMessage.init(message = msg, missingDeps = initHashSet[SdsMessageID]())
         # Phase 2B: in-memory insert only; op-end trySaveMeta covers it.
-        channel.incomingBuffer[msg.messageId] = entry
+        rm.bufferIncoming(channel, entry)
       else:
         (await rm.addToHistory(msg, channelId)).isOkOr:
           return err(error)
@@ -519,7 +541,7 @@ proc unwrapReceivedMessage*(
         message = msg, missingDeps = missingDeps.getMessageIds().toHashSet()
       )
       # Phase 2B: in-memory insert only; op-end trySaveMeta covers it.
-      channel.incomingBuffer[msg.messageId] = entry
+      rm.bufferIncoming(channel, entry)
       if not rm.onMissingDependencies.isNil():
         {.cast(raises: []).}:
           rm.onMissingDependencies(msg.messageId, missingDeps, channelId)

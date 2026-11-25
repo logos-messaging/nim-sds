@@ -13,6 +13,8 @@ const
   DefaultNumResponseGroups* = 1
   DefaultMaxRepairRequests* = 3
   DefaultRepairSweepInterval* = initDuration(seconds = 5)
+  DefaultMaxIncomingBuffer* = 500
+  DefaultMaxOutgoingRepairBuffer* = 1000
   MaxMessageSize* = 1024 * 1024 # 1 MB
 
 import ./rolling_bloom_filter
@@ -33,6 +35,10 @@ type ReliabilityConfig* {.requiresInit.} = object
   numResponseGroups*: int
   maxRepairRequests*: int
   repairSweepInterval*: Duration
+  maxIncomingBuffer*: int
+    ## Messages buffered for missing dependencies; the oldest is dropped past this.
+  maxOutgoingRepairBuffer*: int
+    ## Missing dependencies queued for SDS-R repair; new ones are skipped past this.
 
 proc init*(
     T: type ReliabilityConfig,
@@ -49,6 +55,8 @@ proc init*(
     numResponseGroups: int = DefaultNumResponseGroups,
     maxRepairRequests: int = DefaultMaxRepairRequests,
     repairSweepInterval: Duration = DefaultRepairSweepInterval,
+    maxIncomingBuffer: int = DefaultMaxIncomingBuffer,
+    maxOutgoingRepairBuffer: int = DefaultMaxOutgoingRepairBuffer,
 ): T =
   # Bloom is rebuilt by replaying messageHistory on restart and is also the
   # outgoing summary peers see. A bloom smaller than the log causes continuous
@@ -70,4 +78,6 @@ proc init*(
     numResponseGroups: numResponseGroups,
     maxRepairRequests: maxRepairRequests,
     repairSweepInterval: repairSweepInterval,
+    maxIncomingBuffer: maxIncomingBuffer,
+    maxOutgoingRepairBuffer: maxOutgoingRepairBuffer,
   )

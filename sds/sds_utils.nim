@@ -404,7 +404,7 @@ proc getIncomingBuffer*(
     await rm.lock.acquire()
     try:
       if channelId in rm.channels:
-        return rm.channels[channelId].incomingBuffer
+        return rm.channels[channelId].incomingBuffer.pairs.toSeq.toTable
       else:
         return initTable[SdsMessageID, IncomingMessage]()
     finally:

@@ -26,7 +26,7 @@ type ChannelContext* = ref object
     ## causal-history tail access and FIFO eviction at maxMessageHistory.
   bloomFilter*: RollingBloomFilter
   outgoingBuffer*: seq[UnacknowledgedMessage]
-  incomingBuffer*: Table[SdsMessageID, IncomingMessage]
+  incomingBuffer*: OrderedTable[SdsMessageID, IncomingMessage]
   ## SDS-R buffers
   outgoingRepairBuffer*: Table[SdsMessageID, OutgoingRepairEntry]
   incomingRepairBuffer*: Table[SdsMessageID, IncomingRepairEntry]
@@ -65,7 +65,7 @@ proc new*(T: type ChannelContext, bloomFilter: RollingBloomFilter): T =
     messageHistory: initOrderedTable[SdsMessageID, SdsMessage](),
     bloomFilter: bloomFilter,
     outgoingBuffer: @[],
-    incomingBuffer: initTable[SdsMessageID, IncomingMessage](),
+    incomingBuffer: initOrderedTable[SdsMessageID, IncomingMessage](),
     outgoingRepairBuffer: initTable[SdsMessageID, OutgoingRepairEntry](),
     incomingRepairBuffer: initTable[SdsMessageID, IncomingRepairEntry](),
     pendingHistoryAppends: initOrderedSet[SdsMessageID](),
