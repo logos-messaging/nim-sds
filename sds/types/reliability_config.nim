@@ -16,6 +16,7 @@ const
   DefaultMaxIncomingBuffer* = 500
   DefaultMaxOutgoingRepairBuffer* = 1000
   MaxMessageSize* = 1024 * 1024 # 1 MB
+  MaxMessageMetadataSize* = 64 * 1024
 
 import ./rolling_bloom_filter
 export rolling_bloom_filter

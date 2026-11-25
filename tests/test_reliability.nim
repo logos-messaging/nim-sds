@@ -1621,6 +1621,29 @@ suite "Buffer Limits":
 
     check rm.channels[testChannel].outgoingRepairBuffer.len == 4
 
+  asyncTest "re-buffering a buffered message does not evict":
+    for i in 0 ..< 3:
+      check (await rm.unwrapReceivedMessage(pending("m" & $i, @["missing" & $i]))).isOk()
+    check (await rm.unwrapReceivedMessage(pending("m0", @["missing0"]))).isOk()
+
+    let buffer = rm.channels[testChannel].incomingBuffer
+    check:
+      buffer.len == 3
+      "m0" in buffer
+      "m1" in buffer
+      "m2" in buffer
+
+  asyncTest "oversized metadata is rejected on receive":
+    var deps: seq[string]
+    for i in 0 ..< 40_000:
+      deps.add("missing-dependency-" & $i)
+    let res = await rm.unwrapReceivedMessage(pending("huge", deps))
+    check:
+      res.isErr()
+      res.error == ReliabilityError.reMessageTooLarge
+      rm.channels[testChannel].incomingBuffer.len == 0
+      rm.channels[testChannel].outgoingRepairBuffer.len == 0
+
   asyncTest "oversized content is rejected on receive":
     let msg = SdsMessage.init(
       messageId = "huge",

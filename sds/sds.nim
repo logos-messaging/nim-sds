@@ -414,6 +414,8 @@ proc unwrapReceivedMessage*(
     ]
 ] {.async: (raises: []).} =
   ## Decodes and optionally authorizes before processing reliability metadata.
+  if message.len > MaxMessageSize + MaxMessageMetadataSize:
+    return err(ReliabilityError.reMessageTooLarge)
   try:
     let channelId = extractChannelId(message).valueOr:
       return err(ReliabilityError.reDeserializationError)
