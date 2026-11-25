@@ -1,5 +1,6 @@
 import results, std/[base64, json, times, options, tables, sets]
 import sds
+import sds/bloom
 import ./async_unittest
 import ../library/json_responses
 
@@ -1522,6 +1523,9 @@ suite "Special Cases Handling":
       (mBits: 64, kHashes: 0, capacity: 1, intArray: @[0]),
       (mBits: 64, kHashes: high(int32), capacity: 1, intArray: @[0]),
       (mBits: 64, kHashes: 1, capacity: 0, intArray: @[0]),
+      (mBits: 64, kHashes: 1, capacity: int(high(int32)) + 1, intArray: @[0]),
+      (mBits: 129, kHashes: 1, capacity: 1, intArray: @[0, 0]),
+      (mBits: 64, kHashes: MaxBloomFilterHashes + 1, capacity: 1, intArray: @[0]),
     ]
     for i, g in geometries:
       let bf = BloomFilter.init(
@@ -1547,6 +1551,23 @@ suite "Special Cases Handling":
       check unwrapResult.isOk()
 
     check rm.channels[testChannel].outgoingBuffer.len == 1
+
+  asyncTest "bloom filter at the geometry limits is accepted":
+    let edge = BloomFilter.init(
+      capacity = 1,
+      errorRate = 0.01,
+      kHashes = MaxBloomFilterHashes,
+      mBits = 128,
+      intArray = @[0, 0],
+    )
+    check deserializeBloomFilter(serializeBloomFilter(edge).get()).isOk()
+
+    for errorRate in [0.01, 1e-6, 1e-12]:
+      var bf = initializeBloomFilter(DefaultBloomFilterCapacity, errorRate).get()
+      bf.insert("id")
+      let decoded = deserializeBloomFilter(serializeBloomFilter(bf).get())
+      check decoded.isOk()
+      check decoded.get().lookup("id")
 
   asyncTest "duplicate message handling":
     var messageReadyCount = 0

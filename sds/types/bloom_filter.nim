@@ -1,4 +1,4 @@
-const MaxBloomFilterHashes* = 32
+const MaxBloomFilterHashes* = 64
 
 type BloomFilter* {.requiresInit.} = object
   capacity*: int
