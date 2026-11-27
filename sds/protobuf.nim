@@ -54,6 +54,10 @@ type
     errorRate {.fieldNumber: 3, pint.}: Opt[uint64]
     kHashes {.fieldNumber: 4, pint.}: Opt[uint64]
     mBits {.fieldNumber: 5, pint.}: Opt[uint64]
+    # Field 3 carries the error rate in parts per million, which truncates any
+    # rate below 1e-6 to 0. Field 6 carries it losslessly; field 3 is still
+    # written so older decoders keep reading a (lossy) value.
+    errorRateExact {.fieldNumber: 6.}: Opt[float64]
 
 # ---------------------------------------------------------------------------
 # string <-> bytes (opaque, no UTF-8 validation) and optional-bytes helper
@@ -206,6 +210,7 @@ proc serializeBloomFilter*(filter: BloomFilter): Result[seq[byte], ReliabilityEr
       data: optBytes(bytes),
       capacity: Opt.some(uint64(filter.capacity)),
       errorRate: Opt.some(uint64(filter.errorRate * 1_000_000)),
+      errorRateExact: Opt.some(filter.errorRate),
       kHashes: Opt.some(uint64(filter.kHashes)),
       mBits: Opt.some(uint64(filter.mBits)),
     )
@@ -228,7 +233,8 @@ proc deserializeBloomFilter*(data: seq[byte]): Result[BloomFilter, ReliabilityEr
     return ok(
       BloomFilter.init(
         capacity = int(pb.capacity.valueOr(0'u64)),
-        errorRate = float(pb.errorRate.valueOr(0'u64)) / 1_000_000,
+        errorRate =
+          pb.errorRateExact.valueOr(float(pb.errorRate.valueOr(0'u64)) / 1_000_000),
         kHashes = int(pb.kHashes.valueOr(0'u64)),
         mBits = int(pb.mBits.valueOr(0'u64)),
         intArray = intArray,
