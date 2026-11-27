@@ -56,6 +56,10 @@ proc init*(
   if maxMessageHistory > bloomFilterCapacity:
     warn "maxMessageHistory > bloomFilterCapacity will cause continuous bloom rebuilds and incomplete summaries to peers; reduce maxMessageHistory or increase bloomFilterCapacity unless you have a specific reason",
       maxMessageHistory = maxMessageHistory, bloomFilterCapacity = bloomFilterCapacity
+  if bloomFilterErrorRate > 0.0 and bloomFilterErrorRate < MinBloomFilterErrorRate:
+    warn "bloomFilterErrorRate below the minimum is raised to the minimum",
+      bloomFilterErrorRate = bloomFilterErrorRate,
+      minBloomFilterErrorRate = MinBloomFilterErrorRate
   return T(
     bloomFilterCapacity: bloomFilterCapacity,
     bloomFilterErrorRate: bloomFilterErrorRate,
