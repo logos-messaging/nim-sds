@@ -11,7 +11,12 @@ proc init*(
 ): T {.gcsafe.} =
   let targetCapacity = if capacity <= 0: DefaultBloomFilterCapacity else: capacity
   let targetError =
-    if errorRate <= 0.0 or errorRate >= 1.0: DefaultBloomFilterErrorRate else: errorRate
+    if errorRate <= 0.0 or errorRate >= 1.0:
+      DefaultBloomFilterErrorRate
+    elif errorRate < MinBloomFilterErrorRate:
+      MinBloomFilterErrorRate
+    else:
+      errorRate
 
   let filterResult = initializeBloomFilter(targetCapacity, targetError)
   if filterResult.isErr:

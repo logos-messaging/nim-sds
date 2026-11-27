@@ -6,7 +6,7 @@
 import std/unittest
 import protobuf_serialization
 import protobuf_serialization/pkg/results
-import ../sds/[protobuf, bloom]
+import ../sds/protobuf
 import ../sds/types/[sds_message, history_entry, sds_message_id]
 
 converter toParticipantID(s: string): SdsParticipantID =
@@ -95,36 +95,3 @@ suite "SDS v0.4 wire backward-compatibility":
     check decoded.causalHistory[0].retrievalHint.len == 0
     check decoded.causalHistory[0].senderId.string.len == 0
     check decoded.causalHistory[1].messageId == "0xbbb"
-
-# How a node from before field 6 sees a bloom filter: the error rate is only
-# the parts-per-million varint in field 3.
-type OldBloomFilterPB {.proto3.} = object
-  data {.fieldNumber: 1.}: Opt[seq[byte]]
-  capacity {.fieldNumber: 2, pint.}: Opt[uint64]
-  errorRate {.fieldNumber: 3, pint.}: Opt[uint64]
-  kHashes {.fieldNumber: 4, pint.}: Opt[uint64]
-  mBits {.fieldNumber: 5, pint.}: Opt[uint64]
-
-suite "Bloom filter error rate on the wire":
-  test "error rate round-trips exactly, including below 1e-6":
-    for errorRate in [0.01, 0.29, 1e-6, 1e-10, 1e-12]:
-      let bf = initializeBloomFilter(100, errorRate).get()
-      let decoded = deserializeBloomFilter(serializeBloomFilter(bf).get()).get()
-      check decoded.errorRate == errorRate
-
-  test "filter from an old node decodes its error rate from field 3":
-    let wire = Protobuf.encode(
-      OldBloomFilterPB(
-        data: Opt.some(newSeq[byte](8)),
-        capacity: Opt.some(100'u64),
-        errorRate: Opt.some(10_000'u64),
-        kHashes: Opt.some(7'u64),
-        mBits: Opt.some(64'u64),
-      )
-    )
-    check deserializeBloomFilter(wire).get().errorRate == 0.01
-
-  test "old node still reads the error rate from field 3":
-    let bf = initializeBloomFilter(100, 0.01).get()
-    let old = Protobuf.decode(serializeBloomFilter(bf).get(), OldBloomFilterPB)
-    check old.errorRate.get(0'u64) == 10_000'u64

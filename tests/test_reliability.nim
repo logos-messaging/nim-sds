@@ -1513,6 +1513,13 @@ suite "Special Cases Handling":
       result.isOk()
       result.get()[1].len == 0 # No missing dependencies
 
+  asyncTest "bloom filter error rate below the minimum is raised to it":
+    let rbf = RollingBloomFilter.init(DefaultBloomFilterCapacity, 1e-9)
+    check rbf.filter.errorRate == MinBloomFilterErrorRate
+
+    let decoded = deserializeBloomFilter(serializeBloomFilter(rbf.filter).get()).get()
+    check decoded.errorRate == MinBloomFilterErrorRate
+
   asyncTest "duplicate message handling":
     var messageReadyCount = 0
     await rm.setCallbacks(
